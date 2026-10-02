@@ -1,0 +1,1089 @@
+Build Specification: Mobile-First Model Feed / Content Catalog 1. ROLE 
+
+You are the primary full-stack engineer for this project.
+
+Build the application completely inside Replit as a production-ready, mobile-first web application that can later be deployed to Netlify.
+
+Do NOT use Replit-specific backend services or infrastructure.
+
+The final application must be deployable to:
+
+Netlify Static Hosting Netlify Functions Supabase ZeroStorage 
+
+The application should remain simple, maintainable, modular, and understandable.
+
+Do NOT introduce React, Next.js, Express, or another heavy framework unless there is a concrete technical requirement that cannot be solved with the requested stack.
+
+2. REQUIRED TECHNOLOGY STACK 
+
+Use:
+
+TypeScript Vite Vanilla TypeScript / DOM APIs HTML CSS Supabase JS client Netlify Functions Supabase PostgreSQL Supabase Auth Supabase Row Level Security ZeroStorage API 
+
+Do NOT use:
+
+React Next.js Express Replit Database Replit Auth Firebase Netlify Blobs as the primary database a custom VPS backend 
+
+Keep dependencies minimal.
+
+3. DEPLOYMENT ARCHITECTURE 
+
+The final architecture must be:
+
+Browser ↓ Netlify CDN / Static Site ↓ Vite-built frontend ↓ Supabase ├── Authentication ├── PostgreSQL └── RLS
+
+Admin-only/server-side operations:
+
+Browser ↓ Netlify Function ↓ ZeroStorage API
+
+Never expose the ZeroStorage API key to the browser.
+
+Never expose Supabase Service Role key to the browser.
+
+4. DEVELOPMENT / DEPLOYMENT WORKFLOW 
+
+The project must be Git-friendly.
+
+Recommended workflow:
+
+Replit ↓ GitHub ↓ Netlify ↓ Production
+
+The project must include all files required for GitHub and Netlify deployment.
+
+Do not create a solution that only works inside Replit.
+
+Create:
+
+package.json vite.config.ts tsconfig.json netlify.toml appropriate Netlify Functions directory README.md .gitignore environment variable documentation 
+
+The build must work with:
+
+npm install npm run build
+
+The production output must be:
+
+dist/
+
+5. ENVIRONMENT VARIABLES 
+
+Create a .env.example file.
+
+Do NOT put real secrets into source code.
+
+Required environment variables:
+
+Frontend:
+
+VITE_SUPABASE_URL= VITE_SUPABASE_PUBLISHABLE_KEY=
+
+Server-side only:
+
+ZEROSTORAGE_API_KEY=
+
+Potential server-side Supabase variable:
+
+SUPABASE_SERVICE_ROLE_KEY=
+
+Do not expose server-side secrets through VITE_ variables.
+
+The frontend must only receive the Supabase publishable/anon key.
+
+The ZeroStorage API key must only be accessible from Netlify Functions.
+
+6. FIRST-RUN CONFIGURATION 
+
+If required environment variables are missing, the application must not crash with an obscure error.
+
+Show a useful configuration error in development.
+
+Create a clear README section:
+
+Required Environment Variables 
+
+Explain exactly where each variable belongs.
+
+Also clearly state:
+
+which variables are frontend-safe which variables are server-only NEVER commit .env NEVER expose ZEROSTORAGE_API_KEY NEVER expose SUPABASE_SERVICE_ROLE_KEY 7. SUPABASE DATABASE 
+
+Build the initial database schema using SQL migrations.
+
+Create a /supabase directory.
+
+For example:
+
+supabase/ migrations/ 001_initial_schema.sql 002_rls.sql ...
+
+Do not require manual table creation through the Supabase dashboard if it can be handled through SQL.
+
+8. CORE DATABASE TABLES 
+
+Create the following core tables.
+
+profiles 
+
+Fields:
+
+id UUID primary key, linked to auth.users display_name username avatar_url role created_at updated_at 
+
+Role should support at least:
+
+user admin models 
+
+Fields:
+
+id UUID name username slug description profile_image_url created_at updated_at published 
+
+Requirements:
+
+username optional slug unique published boolean timestamps styles 
+
+Fields:
+
+id UUID name slug created_at 
+
+Style names must be reusable globally.
+
+Example:
+
+Beach Summer Cosplay Black Dress
+
+Do not create duplicate styles with different IDs if the normalized style is the same.
+
+model_styles 
+
+Many-to-many relationship:
+
+model_id style_id 
+
+Composite unique constraint.
+
+9. CONTENT SOURCES 
+
+Create a backend source abstraction because current content comes from different sources.
+
+Sources currently are:
+
+ctele eb wt 
+
+Important:
+
+CTele and EB contain image galleries.
+
+WT contains videos only.
+
+There are NO videos in CTele or EB.
+
+WT does NOT contain image galleries.
+
+Do not infer video content from CTele/EB album titles.
+
+For example, a title such as:
+
+"76 photos and 1 video"
+
+is simply metadata from the scraped source and DOES NOT mean that a video should be imported.
+
+content_sources 
+
+Fields:
+
+id UUID source external_id model_id album_title source_url raw_metadata JSONB created_at 
+
+Source should support:
+
+ctele eb wt 
+
+Add a unique constraint where appropriate on:
+
+source + external_id
+
+This table is metadata only.
+
+It is NOT a public gallery entity.
+
+10. POSTS 
+
+Create one unified posts table.
+
+Every media file is an independent post.
+
+Fields:
+
+id UUID model_id content_source_id nullable type zerostorage_file_id filename nullable caption nullable source source_path nullable published created_at updated_at 
+
+type must be:
+
+image video 
+
+zerostorage_file_id is extremely important.
+
+Use it as the canonical ZeroStorage identity.
+
+Add a unique constraint to prevent importing the same ZeroStorage file twice.
+
+11. POST STYLES 
+
+Create:
+
+post_styles
+
+Fields:
+
+post_id style_id 
+
+Composite unique constraint.
+
+12. USER INTERACTIONS 
+
+Create:
+
+follows
+
+Fields:
+
+user_id model_id created_at 
+
+Unique:
+
+user_id + model_id
+
+Create:
+
+likes
+
+Fields:
+
+user_id post_id created_at 
+
+Unique:
+
+user_id + post_id
+
+Create:
+
+mmcs
+
+Fields:
+
+user_id post_id created_at 
+
+Unique:
+
+user_id + post_id
+
+MMC is a user interaction similar to Like.
+
+Create:
+
+comments
+
+Fields:
+
+id user_id post_id body created_at updated_at 
+
+Users can create comments and manage their own comments.
+
+13. RLS SECURITY 
+
+Enable Row Level Security on all user-accessible tables.
+
+Public users should be able to read only published public content.
+
+Users should only be able to modify their own:
+
+profile where appropriate follows likes mmcs comments 
+
+Users must not be able to:
+
+create models delete models create arbitrary posts change another user's profile modify another user's likes modify another user's MMC modify another user's comments 
+
+Admin operations must be restricted to users whose profile role is admin.
+
+Do not rely only on hiding UI elements.
+
+Backend/database security must enforce permissions.
+
+14. ZERO STORAGE 
+
+ZeroStorage is the media provider.
+
+Current root structure:
+
+0RMCOIN/
+
+Ctele/ model folders/ gallery folders/ image files EB/ model folders/ gallery folders/ image files WT/ model folders/ video files 
+
+Important:
+
+CTele = images only EB = images only WT = videos only 
+
+Do not create a separate public Gallery system.
+
+Folders are primarily an organizational/import concept.
+
+Every actual media file becomes an independent Post.
+
+15. ZERO STORAGE API 
+
+ZeroStorage API documentation:
+
+https://test.zerostorage.net/docs/api/upload
+
+The API requires an API key.
+
+The API key must NEVER be sent to the browser.
+
+Implement ZeroStorage access through Netlify Functions.
+
+Create a service abstraction such as:
+
+netlify/functions/ zerostorage-folders.mts zerostorage-files.mts zerostorage-file.mts
+
+And/or a reusable server-side ZeroStorage service module.
+
+16. ZERO STORAGE URL HANDLING 
+
+Do NOT trust old URLs stored in CSV/source data.
+
+The ZeroStorage File ID is the canonical identity.
+
+Current image embed format:
+
+https://test.zerostorage.net/embed/image/{FILE_ID}
+
+Current video embed format:
+
+https://test.zerostorage.net/embed/{FILE_ID}
+
+Current download format:
+
+https://test.zerostorage.net/api/files/download/{FILE_ID}?track=true
+
+Build these URLs programmatically.
+
+Do not hard-code old upload.zerostorage.net URLs.
+
+Do not store the old URLs as the canonical media identity.
+
+Store:
+
+zerostorage_file_id
+
+Then generate current URLs from that ID.
+
+Create helper functions:
+
+buildImageEmbedUrl(fileId) buildVideoEmbedUrl(fileId) buildDownloadUrl(fileId)
+
+Keep all ZeroStorage URL construction in one place.
+
+17. ZERO STORAGE FILE BROWSER 
+
+Admin needs a ZeroStorage browser.
+
+Initial requirements:
+
+open root navigate folders enter subfolders list files display filename identify image/video where possible select folders select files choose specific folder choose files from current folder select all folders in current folder 
+
+However, do NOT build the CSV importer yet.
+
+The ZeroStorage browser is for manual linking/importing.
+
+18. ADMIN: MODEL MANAGEMENT 
+
+Create an Admin section.
+
+Admin can:
+
+create model edit model publish/unpublish model assign styles set profile image URL view model posts add posts 
+
+Create Model form:
+
+Name required Username optional Description optional Profile image URL optional Styles multi-select Published toggle 
+
+Username can default from name if necessary, but keep display name and username as separate fields.
+
+Generate a safe slug.
+
+19. ADMIN: ADD POSTS 
+
+Admin workflow:
+
+Select an existing model. Click Add Posts / Link Posts. Open ZeroStorage browser. Navigate to model folder. Select media files or folders. Review selected files. Set caption. Assign styles. Preview. Publish. 
+
+For image gallery folders:
+
+every image is an independent Post folder name can become the default caption folder can provide default styles admin can edit caption/styles before publishing 
+
+For WT videos:
+
+every video is an independent Post video filename can become the initial caption hashtags in filenames may later be parsed into styles 
+
+Do NOT implement complex automatic hashtag processing yet unless it is very simple and isolated.
+
+The architecture must leave room for it later.
+
+20. DUPLICATE DETECTION 
+
+Before creating a post, check:
+
+zerostorage_file_id
+
+If that ID already exists:
+
+Do not create another post.
+
+Show a useful admin message:
+
+"Already imported"
+
+and identify the existing post.
+
+This must be enforced at the database level with a unique constraint, not only frontend logic.
+
+21. CSV IMPORT — DO NOT IMPLEMENT NOW 
+
+IMPORTANT:
+
+Do NOT build CSV import in this version.
+
+CSV import will be a future feature.
+
+Do not create a huge importer now.
+
+Do however design the database so that future CSV reconciliation is possible.
+
+Future functionality may:
+
+read old CSV records extract ZeroStorage file IDs match existing posts match models attach metadata reconcile source information 
+
+But none of this should be part of the current UI or import workflow.
+
+Keep the current application simple.
+
+22. FUTURE CSV COMPATIBILITY 
+
+Although CSV import is postponed, preserve fields that will make future matching possible:
+
+source external_id through content_sources zerostorage_file_id model_id content_source_id source_path source_url album_title 
+
+Do not over-engineer the future importer.
+
+23. PUBLIC APP 
+
+Create a mobile-first public application.
+
+Bottom navigation:
+
+Home Explore Models Me 
+
+Models can contain a Styles section/tab rather than creating a fifth bottom navigation item if that produces a cleaner UX.
+
+Do not add unnecessary navigation items.
+
+24. HOME 
+
+Home is the main feed.
+
+At the top:
+
+All followed models as selectable filters 
+
+Example:
+
+All | Model A | Model B | Model C
+
+Feed should prioritize followed models.
+
+Suggested/discovery content can later be influenced by:
+
+followed models followed styles styles attached to posts related models recent content 
+
+Do NOT build an AI recommendation system.
+
+Keep recommendation logic simple and deterministic.
+
+25. EXPLORE 
+
+Explore is a discovery feed.
+
+It may contain:
+
+random/discovery posts posts from followed styles posts from related models recent posts search 
+
+Do not implement complex ranking.
+
+26. MODELS 
+
+Models page:
+
+mobile-first two-column cards where appropriate profile image model name username Follow button optional follower count 
+
+Clicking a model opens its detail page.
+
+27. MODEL DETAIL 
+
+Model profile contains:
+
+profile image name username description Follow button style list post count if useful 
+
+Tabs:
+
+ALL PICS VIDS
+
+If a model has no videos:
+
+Do not show VIDS.
+
+If a model has no images:
+
+Do not show PICS.
+
+Important:
+
+Do NOT create a separate public Gallery page.
+
+The model page shows individual post thumbnails.
+
+Clicking a thumbnail opens the corresponding post/feed viewer.
+
+28. STYLES 
+
+Styles are global entities.
+
+Create a Styles section accessible from Models or another clean navigation location.
+
+A style page can show:
+
+style name related models related posts 
+
+Styles should be clickable wherever displayed.
+
+29. ME 
+
+Me page:
+
+circular profile image display name stats followed models followed styles 
+
+Future sections may include:
+
+liked posts saved posts settings 
+
+Do not overbuild this version.
+
+30. POST UI 
+
+Every image/video is an independent Post.
+
+Post UI should include:
+
+model avatar model name media Like MMC Comment Mute/Unmute for video Fullscreen caption styles/hashtags 
+
+MMC:
+
+Use a water-drop/multiple-water-drop visual.
+
+Initial state:
+
+empty/unselected
+
+After click:
+
+filled blue accent
+
+Increment MMC count.
+
+It must be a per-user/per-post database interaction.
+
+31. VIDEO 
+
+Videos should support:
+
+play/pause mute/unmute fullscreen appropriate native controls vertical feed behavior autoplay when visible where browser policies allow pause when no longer visible 
+
+Use IntersectionObserver.
+
+Do not autoplay with sound.
+
+32. CUSTOM FULLSCREEN 
+
+Do NOT rely only on browser-native fullscreen.
+
+Build a custom fullscreen viewer.
+
+Requirements:
+
+Normal mode:
+
+model information visible interactions visible controls visible 
+
+Fullscreen mode:
+
+media becomes dominant unnecessary metadata/controls are hidden feed can continue vertically user can move between posts 
+
+Fullscreen icon must change to the opposite icon.
+
+Exiting fullscreen restores normal overlays and controls.
+
+33. ZOOM 
+
+Images and videos should support:
+
+pinch zoom on mobile double tap zoom pan when zoomed appropriate touch handling 
+
+Keep this modular.
+
+Create a reusable media viewer component.
+
+34. FEED PERFORMANCE 
+
+The application must be designed for potentially large numbers of posts.
+
+Use:
+
+lazy image loading IntersectionObserver only initialize video when needed pause off-screen videos avoid rendering huge numbers of DOM nodes at once if feed becomes large pagination / infinite loading from Supabase 
+
+Do not load every post in the database at once.
+
+Use pagination.
+
+35. SUPABASE QUERIES 
+
+Create service modules:
+
+src/services/ supabase.ts auth.ts models.ts posts.ts styles.ts follows.ts interactions.ts
+
+Do not scatter raw Supabase queries across every UI component.
+
+Components should call service functions.
+
+36. TYPES 
+
+Create shared TypeScript types:
+
+src/types/
+
+models.ts posts.ts styles.ts users.ts interactions.ts
+
+Use typed database results where practical.
+
+Do not use any unnecessarily.
+
+37. COMPONENT ARCHITECTURE 
+
+Use simple reusable UI modules.
+
+Suggested:
+
+components/ BottomNav.ts PostCard.ts PostMedia.ts ModelHeader.ts ModelCard.ts StyleChip.ts CommentPanel.ts FullscreenViewer.ts Loading.ts EmptyState.ts Modal.ts
+
+Do not create hundreds of micro-components.
+
+Keep components meaningful.
+
+38. ROUTING 
+
+Implement a lightweight client-side router.
+
+Required routes:
+
+/ /explore /models /models/:slug /styles /styles/:slug /me /post/:id /admin /admin/models /admin/posts /admin/import
+
+The final exact routing implementation can be simple and dependency-light.
+
+Netlify must rewrite application routes to index.html.
+
+39. DESIGN 
+
+The design should be:
+
+dark premium modern restrained mobile-first 
+
+Suggested base:
+
+Background: #171717 / #181817
+
+Cards: #20201F
+
+Gold: #C8A96A
+
+Light gold: #E0C98A
+
+Text: white / light gray
+
+MMC: blue accent
+
+Do NOT use bright yellow everywhere.
+
+Gold should feel muted and premium.
+
+MMC blue is a special interaction accent.
+
+Do not finalize branding/logo yet.
+
+Use placeholder branding where necessary.
+
+40. DESKTOP BEHAVIOR 
+
+On desktop:
+
+The application should remain visually centered around a mobile-sized viewport.
+
+Example:
+
+dark desktop background
+
+┌───────────────────┐ │ │ │ mobile-width │ │ app │ │ │ └───────────────────┘ 
+
+Do not stretch the entire feed across a large desktop monitor.
+
+41. RESPONSIVE DESIGN 
+
+Optimize first for:
+
+Android mobile browsers Chrome mobile Safari mobile where applicable 
+
+Then support:
+
+tablets desktop 
+
+Touch interaction must be considered from the beginning.
+
+42. ACCESSIBILITY 
+
+Use:
+
+semantic buttons aria-labels for icon buttons keyboard support where practical visible focus states sufficient text contrast 
+
+Do not sacrifice mobile visual design.
+
+43. ERROR HANDLING 
+
+Never silently fail.
+
+For:
+
+failed Supabase request failed ZeroStorage request unauthorized admin access missing media invalid model duplicate post network failure 
+
+show a useful UI message.
+
+Do not expose secrets or internal stack traces to users.
+
+Log useful technical information server-side where appropriate.
+
+44. ZERO STORAGE ERROR HANDLING 
+
+If ZeroStorage file is missing:
+
+Show:
+
+"Media unavailable"
+
+Do not crash the feed.
+
+If an embed fails, provide a safe fallback where technically possible.
+
+Do not expose API credentials.
+
+45. SECURITY 
+
+Important rules:
+
+No secret keys in frontend. No service role key in frontend. No ZeroStorage API key in frontend. Admin permissions enforced server-side/database-side. RLS enabled. Validate input. Sanitize user-generated comments. Do not use dangerously injected HTML for user content. Use parameterized database queries through Supabase. Do not trust client-side role claims. 46. ADMIN UX 
+
+Admin should be simple.
+
+Dashboard:
+
+Models Posts Styles ZeroStorage Browser Import/Link Posts basic statistics 
+
+Do not build a complicated enterprise dashboard.
+
+47. INITIAL DASHBOARD STATISTICS 
+
+Useful simple values:
+
+total models published models total posts images videos total users 
+
+Do not create complex analytics yet.
+
+48. MODEL MANAGEMENT 
+
+Admin model list should support:
+
+search create edit publish/unpublish open model view post count 49. POST MANAGEMENT 
+
+Admin post list should support:
+
+search filter by model filter image/video filter published/unpublished edit caption edit styles publish/unpublish delete where permitted 
+
+Deletion should be deliberate.
+
+Do not delete ZeroStorage files when deleting a Post unless a future explicit media-management feature is added.
+
+The current application only manages references to ZeroStorage media.
+
+50. DATABASE MIGRATIONS 
+
+Create clean SQL migrations.
+
+Do not make the database depend on manually clicking random dashboard options.
+
+README must explain:
+
+how to create Supabase project where to run migrations where to find project URL where to find publishable key how to configure Netlify environment variables 51. LOCAL DEVELOPMENT 
+
+README should provide:
+
+npm install
+
+npm run dev
+
+npm run build
+
+npm run preview
+
+Explain how to configure .env.local.
+
+52. NETLIFY DEPLOYMENT 
+
+Include netlify.toml.
+
+Expected concept:
+
+build command:
+
+npm run build
+
+publish directory:
+
+dist
+
+Functions directory:
+
+netlify/functions
+
+Configure SPA redirects.
+
+Do not require a traditional always-running Node server.
+
+53. NETLIFY FUNCTIONS 
+
+Use Netlify Functions for:
+
+ZeroStorage folder browsing ZeroStorage file browsing protected admin-side ZeroStorage operations future server-side integrations 
+
+Functions should:
+
+validate input validate authentication/authorization where required access server-only environment variables return clean JSON return appropriate HTTP status codes 54. DO NOT BUILD CSV IMPORT NOW 
+
+This is intentionally postponed.
+
+Do not spend significant implementation time on:
+
+CSV parsing UI background CSV import CSV progress UI CSV matching CSV reconciliation 
+
+Only preserve the database fields required for future reconciliation.
+
+The first version should focus on:
+
+Authentication Models Styles Posts ZeroStorage browser Manual post linking Public feed Follow Like MMC Comments Model pages Explore Admin Netlify deployment 55. CURRENT ZERO STORAGE CONTENT STRUCTURE 
+
+Treat this as authoritative:
+
+0RMCOIN/
+
+Ctele/ model folders/ gallery folders/ image files EB/ model folders/ gallery folders/ image files WT/ model folders/ video files 
+
+Rules:
+
+CTele: image only
+
+EB: image only
+
+WT: video only
+
+There is currently no need to build separate media pipelines.
+
+All content becomes Posts.
+
+56. FUTURE CSV RECONCILIATION 
+
+Future feature, NOT CURRENT VERSION.
+
+Potential future flow:
+
+Existing Posts + CSV data ↓ match by ZeroStorage File ID ↓ match Model ↓ attach historical metadata ↓ reconcile
+
+Design current database so this is possible later.
+
+Do not implement now.
+
+57. CODE QUALITY 
+
+Use:
+
+strict TypeScript small modules meaningful names comments only where useful no unnecessary abstractions no giant files no duplicated ZeroStorage URL logic no duplicated Supabase query logic 
+
+Avoid premature architecture.
+
+58. IMPORTANT IMPLEMENTATION RULE 
+
+Before writing a large amount of code:
+
+First inspect the repository.
+
+Then create a concise implementation plan.
+
+Then implement in logical stages.
+
+After each major stage:
+
+run TypeScript checks run build fix errors verify functionality 
+
+Do not wait until the very end to discover compilation problems.
+
+59. REPLIT ENVIRONMENT QUESTIONS 
+
+Before implementing anything that requires unavailable credentials, determine which environment variables are missing.
+
+Ask the project owner for the following values:
+
+Required:
+
+Supabase Project URL Supabase Publishable/Anon Key ZeroStorage API Key 
+
+Optional later:
+
+Admin email/account information Final project name Final logo Final domain 
+
+Do NOT ask for:
+
+Supabase Service Role key in chat passwords personal credentials 
+
+If a server-side secret is needed, explain that it must be entered into Replit/Netlify Secrets or Environment Variables rather than pasted into source code.
+
+60. ZERO STORAGE API DOCUMENTATION 
+
+Use the following documentation as the source of truth for ZeroStorage API integration:
+
+https://test.zerostorage.net/docs/api/upload
+
+Do not invent API endpoints.
+
+If the documentation does not clearly specify an endpoint or response shape, inspect the documentation before implementing it.
+
+If additional ZeroStorage documentation is needed for:
+
+folders files authentication file metadata 
+
+locate and inspect the appropriate documentation pages.
+
+61. TEST DATA 
+
+Use the following known examples only for development/testing.
+
+Example image File ID:
+
+cff4e136-97c8-4aab-a2a1-c60025fb7a1b
+
+Current image embed:
+
+https://test.zerostorage.net/embed/image/cff4e136-97c8-4aab-a2a1-c60025fb7a1b
+
+Example video File ID:
+
+b34b744f-9e91-4055-849a-51a3bb8b1b33
+
+Current video embed:
+
+https://test.zerostorage.net/embed/b34b744f-9e91-4055-849a-51a3bb8b1b33
+
+Current download format:
+
+https://test.zerostorage.net/api/files/download/{FILE_ID}?track=true
+
+Do not hard-code these test files into production data.
+
+62. CSV EXAMPLE INFORMATION 
+
+Historical CTele CSV records may contain fields such as:
+
+id sourceUrl url image title Category Character Model_name Album_title images_urls Gallery iFrame Gallery Downloads 
+
+However, CSV import is NOT part of the current implementation.
+
+Some historical URLs use old ZeroStorage URL formats.
+
+Do not use those old URLs as canonical media URLs.
+
+The ZeroStorage File ID is the important identifier.
+
+63. FINAL DELIVERABLE 
+
+At the end of implementation, the repository should contain a complete working project.
+
+It must include:
+
+frontend backend Netlify Functions Supabase schema RLS policies ZeroStorage integration admin UI public UI authentication models styles posts follows likes MMC comments responsive mobile UI build configuration Netlify configuration README .env.example 
+
+Run:
+
+npm run build
+
+and ensure it succeeds.
+
+Fix all TypeScript/build errors before considering the implementation complete.
+
+64. FINAL README REQUIREMENTS 
+
+README must contain:
+
+Project overview Architecture Technology stack Folder structure Environment variables Supabase setup Database migrations ZeroStorage setup Local development Build Netlify deployment GitHub deployment Admin setup Security notes Current limitations 
+
+Explicitly mention:
+
+CSV import is intentionally postponed.
+
+65. DEVELOPMENT PRIORITY 
+
+Implement in this order:
+
+PHASE 1 Project skeleton Vite TypeScript Netlify configuration Supabase connection
+
+PHASE 2 Database migrations RLS Auth
+
+PHASE 3 Models Styles Posts
+
+PHASE 4 ZeroStorage server integration ZeroStorage browser Manual post linking
+
+PHASE 5 Public UI Home Explore Models Styles Me
+
+PHASE 6 Post viewer Video Fullscreen Zoom Interactions
+
+PHASE 7 Admin Model management Post management
+
+PHASE 8 Testing Security review Build optimization Netlify deployment
+
+Do NOT implement CSV import in this version.
+
+66. IMPORTANT FINAL RULE 
+
+Keep the implementation simple.
+
+This project is intentionally designed as:
+
+TypeScript + Vite + Vanilla UI + Netlify + Netlify Functions + Supabase + ZeroStorage
+
+Do not turn it into a large framework-heavy application.
+
+Build a clean foundation that can grow later.
+
+Before asking for unnecessary information, check whether the information is actually required.
+
+If credentials are missing, ask for the exact missing environment variables.
+
+Do not ask for secrets to be pasted into source code.
+
+Start by inspecting the existing Replit workspace and then implement the project according to this specification.

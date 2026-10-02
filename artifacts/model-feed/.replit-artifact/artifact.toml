@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Model Feed"
+description = "A mobile-first model feed and content catalog with Supabase authentication and data, per-user interactions, admin management, and secure ZeroStorage browsing through Netlify Functions."
+version = "1.0.0"
+id = "artifacts/model-feed"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 24959
+
+[services.development]
+run = "pnpm --filter @workspace/model-feed run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/model-feed", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/model-feed/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24959"
+BASE_PATH = "/"
