@@ -1,0 +1,1 @@
+- [Model Feed constraints](model-feed-constraints.md) — keep the app framework-light, portable, CSV-free, and privileged credentials server-side.

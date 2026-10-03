@@ -5,7 +5,7 @@ const publishableKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim();
 
 function configurationProblem(): string | null {
   if (!supabaseUrl || !publishableKey) {
-    return "Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY to your local environment or Netlify site settings, then restart the app.";
+    return "Supabase is not configured. Add SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY (or the VITE_-prefixed local aliases) to the build environment, then restart the app.";
   }
 
   try {

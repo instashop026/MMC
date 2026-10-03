@@ -87,10 +87,10 @@ export async function listPosts({
   );
   const stylesByPost = new Map<string, Style[]>();
   for (const link of styleResult.data ?? []) {
-    const style = link.styles as unknown as Style | null;
-    if (!style) continue;
     const list = stylesByPost.get(link.post_id as string) ?? [];
-    list.push(style);
+    const related = link.styles as unknown as Style | Style[] | null;
+    if (Array.isArray(related)) list.push(...related);
+    else if (related) list.push(related);
     stylesByPost.set(link.post_id as string, list);
   }
 

@@ -2,7 +2,7 @@ import {
   getAuthUser, onAuthChange, getMyProfile, signIn, signUp, signOut, sendPasswordReset,
 } from './services/auth';
 import {
-  listModels, getModelDetail, createModel, updateModel, setModelStyles,
+  listModels, listFollowedModels, getModelDetail, createModel, updateModel, removeModel, setModelStyles,
 } from './services/models';
 import {
   toggleFollow, getFollowedModelIds, toggleStyleFollow, getFollowedStyleIds, listFollowedStyles,
@@ -17,6 +17,7 @@ import {
 import { listFolders, listFiles } from './services/zerostorage';
 import { buildDownloadUrl } from './lib/zerostorage-urls';
 import { sourceForPath } from './services/zerostorage';
+import type { ContentSource, MediaType } from './types/models';
 
 type AnyRecord = Record<string, any>;
 type Route = { path: string; segments: string[]; query: URLSearchParams };
@@ -112,6 +113,9 @@ function toast(message: string): void {
 }
 function userError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err ?? '');
+  if (/schema cache|could not find the table|relation .* does not exist|PGRST205/i.test(msg)) {
+    return 'The Supabase tables are not set up yet. Apply the SQL migrations in supabase/migrations/ in numeric order.';
+  }
   if (/fetch|network|load failed/i.test(msg)) return 'A network connection could not be reached. Check your connection and try again.';
   if (/supabase|url|key|config|environment/i.test(msg)) return 'The service is not configured yet. Please try again later or contact the administrator.';
   return msg || 'Something went wrong. Please try again.';
@@ -133,7 +137,8 @@ function navItem(path: string, label: string, ico: string): string {
 }
 function shell(content: string): string {
   const admin = isAdmin();
-  return `<div class="shell"><div class="phone-column"><header class="topbar"><a href="/" class="wordmark" data-go="/">Model Feed</a><div class="top-actions">${admin ? `<button class="plain-button small" data-go="/admin">Admin</button>` : ''}<button class="icon-button" data-go="/me" aria-label="Your account">${icon('profile')}</button></div></header>${state.error ? `<div class="notice error-notice" role="alert">${esc(state.error)}</div>` : ''}<main class="page">${content}</main><nav class="bottom-nav" aria-label="Primary navigation">${navItem('/', 'Feed', 'home')}${navItem('/explore', 'Explore', 'explore')}${navItem('/models', 'Models', 'models')}${navItem('/me', 'You', 'profile')}</nav></div></div>${modalMarkup()}`;
+  const showError = state.error && !content.includes('class="error-state"');
+  return `<div class="shell"><div class="phone-column"><header class="topbar"><a href="/" class="wordmark" data-go="/">Model Feed</a><div class="top-actions">${admin ? `<button class="plain-button small" data-go="/admin">Admin</button>` : ''}<button class="icon-button" data-go="/me" aria-label="Your account">${icon('profile')}</button></div></header>${showError ? `<div class="notice error-notice" role="alert">${esc(state.error)}</div>` : ''}<main class="page">${content}</main><nav class="bottom-nav" aria-label="Primary navigation">${navItem('/', 'Feed', 'home')}${navItem('/explore', 'Explore', 'explore')}${navItem('/models', 'Models', 'models')}${navItem('/me', 'You', 'profile')}</nav></div></div>${modalMarkup()}`;
 }
 function isAdmin(): boolean {
   const p = state.profile as AnyRecord | null;
@@ -159,15 +164,15 @@ function postCard(p: AnyRecord): string {
 }
 function modelCard(m: AnyRecord): string {
   const name = modelName(m), slug = modelSlug(m);
-  const image = str(m, 'cover_url', 'coverUrl', 'avatar_url', 'avatarUrl', 'image_url', 'imageUrl');
+  const image = str(m, 'profile_image_url', 'profileImageUrl', 'cover_url', 'coverUrl', 'avatar_url', 'avatarUrl', 'image_url', 'imageUrl');
   const followerIds = state.followed;
   const following = followerIds.has(idOf(m)) || bool(m, 'is_following', 'isFollowing', 'following');
-  return `<article class="model-tile"><a href="/models/${esc(slug)}" data-go="/models/${esc(slug)}"><div class="model-image">${image ? `<img loading="lazy" src="${esc(image)}" alt="${esc(name)}">` : `<div class="media-placeholder"><span>${esc(name.slice(0,1).toUpperCase())}</span></div>`}</div><div class="model-info"><strong>${esc(name)}</strong><small>${esc(str(m, 'tagline', 'location', 'handle') || 'Creator')}</small></div></a><div class="model-info" style="padding-top:0"><button class="btn btn-outline btn-small btn-block" data-action="follow" data-id="${esc(idOf(m))}" aria-pressed="${following}">${following ? 'Following' : 'Follow'}</button></div></article>`;
+  return `<article class="model-tile"><a href="/models/${esc(slug)}" data-go="/models/${esc(slug)}"><div class="model-image">${image ? `<img loading="lazy" src="${esc(image)}" alt="${esc(name)}">` : `<div class="media-placeholder"><span>${esc(name.slice(0,1).toUpperCase())}</span></div>`}</div><div class="model-info"><strong>${esc(name)}</strong><small>${esc(str(m, 'tagline', 'location', 'username', 'handle') || 'Creator')}</small></div></a><div class="model-info" style="padding-top:0"><button class="btn btn-outline btn-small btn-block" data-action="follow" data-id="${esc(idOf(m))}" aria-pressed="${following}">${following ? 'Following' : 'Follow'}</button></div></article>`;
 }
 function searchField(placeholder: string): string {
   return `<div class="search-box"><input type="search" value="${esc(state.search)}" placeholder="${esc(placeholder)}" aria-label="${esc(placeholder)}" data-search></div>`;
 }
-async function loadPosts(args: {limit:number;offset:number;modelId?:string;type?:string;search?:string}): Promise<AnyRecord[]> {
+async function loadPosts(args: {limit:number;offset:number;modelId?:string;type?:MediaType;search?:string}): Promise<AnyRecord[]> {
   return list(await listPosts(args));
 }
 async function loadModels(search = ''): Promise<AnyRecord[]> {
@@ -175,7 +180,7 @@ async function loadModels(search = ''): Promise<AnyRecord[]> {
 }
 async function pageFeed(): Promise<string> {
   const posts = publicPosts(await loadPosts({ limit: 30, offset: 0, search: state.search || undefined }));
-  return `${heading('A closer look', 'The feed', 'Stories and stills, shared by the creators you follow.')}${searchField('Search the feed')}<div class="feed">${posts.length ? posts.map(postCard).join('') : stateBlock('empty', 'Follow a model to make this space your own.')}</div>`;
+  return `${heading('A closer look', 'The feed', 'Recent work from across the creator community.')}${searchField('Search the feed')}<div class="feed">${posts.length ? posts.map(postCard).join('') : stateBlock('empty', 'New posts will appear here.')}</div>`;
 }
 async function pageExplore(): Promise<string> {
   const [posts, models, styles] = await Promise.all([loadPosts({limit:24,offset:0,search:state.search || undefined}), loadModels(state.search), listStyles({limit:24,offset:0})]);
@@ -189,11 +194,12 @@ async function pageModels(): Promise<string> {
   return `${heading('People to know', 'Models', 'Follow the creators whose work you want to return to.')}${searchField('Search models')}<div class="model-grid">${models.length ? models.map(modelCard).join('') : stateBlock('empty','Try another search, or check back soon.')}</div>`;
 }
 async function pageModel(slug: string): Promise<string> {
-  const model = await getModelDetail(slug) as AnyRecord;
+  const model = await getModelDetail(slug);
+  if (!model) throw new Error('This creator profile could not be found.');
   if (!isAdmin() && hasAny(model,'published','is_published','isPublished') && !bool(model,'published','is_published','isPublished')) throw new Error('This creator profile is not available.');
   const id = idOf(model), posts = publicPosts(await loadPosts({limit:30,offset:0,modelId:id}));
   const name = modelName(model), followed = state.followed.has(id) || bool(model,'is_following','isFollowing','following');
-  const image = str(model,'avatar_url','avatarUrl','image_url','imageUrl');
+  const image = str(model,'profile_image_url','profileImageUrl','avatar_url','avatarUrl','image_url','imageUrl');
   const styles = Array.isArray(model.styles) ? model.styles as AnyRecord[] : [];
   return `<section class="model-profile">${image ? `<img class="avatar" style="object-fit:cover" src="${esc(image)}" alt="${esc(name)}">` : `<div class="avatar">${esc(name.slice(0,1).toUpperCase())}</div>`}<div style="flex:1"><span class="eyebrow">Creator</span><h1>${esc(name)}</h1><span class="muted small">${esc(str(model,'location','handle'))}</span></div><button class="btn btn-outline btn-small" data-action="follow" data-id="${esc(id)}" aria-pressed="${followed}">${followed?'Following':'Follow'}</button></section><p class="model-bio">${esc(str(model,'bio','description'))}</p>${styles.length ? `<div class="chips spacer-top">${styles.map(s=>`<a class="chip" href="/styles/${esc(str(s,'slug')||idOf(s))}" data-go="/styles/${esc(str(s,'slug')||idOf(s))}">${esc(str(s,'name','title'))}</a>`).join('')}</div>`:''}<div class="section-title"><h2>Posts</h2><span class="muted small">${posts.length} shared</span></div><div class="feed">${posts.length ? posts.map(postCard).join('') : stateBlock('empty','This creator has not shared any posts yet.')}</div>`;
 }
@@ -210,14 +216,15 @@ async function pageStyle(slug: string): Promise<string> {
   return `${heading('Style',str(style,'name','title') || 'Style')}<div class="row-between spacer-top"><p class="page-intro">A collection of posts and creators with a shared point of view.</p><button class="btn btn-outline btn-small" data-action="style-follow" data-id="${esc(idOf(style))}" aria-pressed="${following}">${following?'Following style':'Follow style'}</button></div><div class="section-title"><h2>Creators in this style</h2></div><div class="model-grid">${models.length ? models.map(modelCard).join('') : stateBlock('empty','No creators are linked to this style yet.')}</div><div class="section-title"><h2>Posts in this style</h2></div><div class="feed">${posts.length ? posts.map(postCard).join('') : stateBlock('empty','No posts are linked to this style yet.')}</div>`;
 }
 async function pagePost(id: string): Promise<string> {
-  const p = await getPost(id) as AnyRecord;
+  const p = await getPost(id);
+  if (!p) throw new Error('This post could not be found.');
   return `${heading('From the feed','Post')}${postCard(p)}<div class="row-between spacer-top"><button class="btn btn-outline btn-small" data-action="comments" data-id="${esc(id)}">Read and add comments</button><button class="plain-button small" data-go="/">Back to feed</button></div>`;
 }
 async function profilePage(): Promise<string> {
   if (!state.user) return authPage();
   const p = state.profile as AnyRecord | null;
   const [models, styles] = await Promise.all([
-    loadModels(),
+    listFollowedModels(),
     listFollowedStyles(),
   ]);
   const followedModels=publicModels(models).filter(m=>state.followed.has(idOf(m)));
@@ -225,7 +232,7 @@ async function profilePage(): Promise<string> {
 }
 function authPage(): string {
   const tab = state.modalData.authMode || 'signin';
-  return `${heading('An invitation to look closer','Your account','Sign in to follow creators, save moments and join the conversation.')}<div class="auth-wrap"><div class="auth-card"><div class="tabs"><button class="tab ${tab==='signin'?'selected':''}" data-action="auth-mode" data-mode="signin">Sign in</button><button class="tab ${tab==='signup'?'selected':''}" data-action="auth-mode" data-mode="signup">Create account</button></div><form data-form="auth"><input type="hidden" name="mode" value="${esc(tab)}">${tab==='signup'?`<div class="field"><label for="display-name">Display name</label><input id="display-name" name="displayName" autocomplete="name" required></div>`:''}<div class="field"><label for="email">Email address</label><input id="email" name="email" type="email" autocomplete="email" required></div><div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="${tab==='signin'?'current-password':'new-password'}" minlength="6" required></div><button class="btn btn-gold btn-block" type="submit">${tab==='signin'?'Sign in':'Create account'}</button></form>${tab==='signin'?`<button class="text-link spacer-top" data-action="reset-password">Forgot password?</button>`:''}</div></div>`;
+  return `${heading('An invitation to look closer','Your account','Sign in to follow creators, save moments and join the conversation.')}<div class="auth-wrap"><div class="auth-card"><div class="tabs"><button class="tab ${tab==='signin'?'selected':''}" data-action="auth-mode" data-mode="signin">Sign in</button><button class="tab ${tab==='signup'?'selected':''}" data-action="auth-mode" data-mode="signup">Create account</button></div>${state.modalData.authNotice?`<p class="notice" role="status">${esc(state.modalData.authNotice)}</p>`:''}<form data-form="auth"><input type="hidden" name="mode" value="${esc(tab)}">${tab==='signup'?`<div class="field"><label for="display-name">Display name</label><input id="display-name" name="displayName" autocomplete="name" required></div>`:''}<div class="field"><label for="email">Email address</label><input id="email" name="email" type="email" autocomplete="email" required></div><div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="${tab==='signin'?'current-password':'new-password'}" minlength="6" required></div><button class="btn btn-gold btn-block" type="submit">${tab==='signin'?'Sign in':'Create account'}</button></form>${tab==='signin'?`<button class="text-link spacer-top" data-action="reset-password">Forgot password?</button>`:''}</div></div>`;
 }
 async function pageAdmin(): Promise<string> {
   if (!state.user) return `${heading('Catalog desk','Administrator access','Sign in with an administrator account to manage the catalog.')}<button class="btn btn-gold" data-go="/me">Sign in</button>`;
@@ -235,7 +242,7 @@ async function pageAdmin(): Promise<string> {
 async function pageAdminModels(): Promise<string> {
   if (!isAdmin()) return await pageAdmin();
   const models = await loadModels(state.search);
-  return `${heading('Catalog desk','Manage models','Keep profiles and style relationships in good order.')}<div class="toolbar"><h2>Models</h2><button class="btn btn-gold btn-small" data-action="model-create">Add model</button></div>${searchField('Search models')}<div class="table-list">${models.length ? models.map(m=>`<article class="table-row"><div class="avatar">${esc(modelName(m).slice(0,1))}</div><div class="table-row-main"><strong>${esc(modelName(m))}</strong><small>${esc(str(m,'slug'))} · ${bool(m,'published','is_published','isPublished')?'Published':'Draft'}</small></div><button class="btn btn-outline btn-small" data-action="model-publish" data-id="${esc(idOf(m))}" data-published="${bool(m,'published','is_published','isPublished')}">${bool(m,'published','is_published','isPublished')?'Unpublish':'Publish'}</button><button class="btn btn-outline btn-small" data-action="model-edit" data-id="${esc(idOf(m))}">Edit</button></article>`).join('') : stateBlock('empty','Add a model profile to begin.')}</div>`;
+  return `${heading('Catalog desk','Manage models','Keep profiles and style relationships in good order.')}<div class="toolbar"><h2>Models</h2><button class="btn btn-gold btn-small" data-action="model-create">Add model</button></div>${searchField('Search models')}<div class="table-list">${models.length ? models.map(m=>`<article class="table-row"><div class="avatar">${esc(modelName(m).slice(0,1))}</div><div class="table-row-main"><strong>${esc(modelName(m))}</strong><small>${esc(str(m,'slug'))} · ${bool(m,'published','is_published','isPublished')?'Published':'Draft'}</small></div><button class="btn btn-outline btn-small" data-action="model-publish" data-id="${esc(idOf(m))}" data-published="${bool(m,'published','is_published','isPublished')}">${bool(m,'published','is_published','isPublished')?'Unpublish':'Publish'}</button><button class="btn btn-outline btn-small" data-action="model-edit" data-id="${esc(idOf(m))}">Edit</button><button class="btn btn-danger btn-small" data-action="model-delete" data-id="${esc(idOf(m))}" data-name="${esc(modelName(m))}">Delete</button></article>`).join('') : stateBlock('empty','Add a model profile to begin.')}</div>`;
 }
 
 async function pageAdminStyles(): Promise<string> {
@@ -245,7 +252,7 @@ async function pageAdminStyles(): Promise<string> {
 }
 async function pageAdminPosts(): Promise<string> {
   if (!isAdmin()) return await pageAdmin();
-  const posts = await loadPosts({limit:80,offset:0,search:state.search || undefined, modelId:state.filterModel || undefined, type:state.filterType || undefined});
+  const posts = await loadPosts({limit:80,offset:0,search:state.search || undefined, modelId:state.filterModel || undefined, type:state.filterType==='image'?'image':state.filterType==='video'?'video':undefined});
   return `${heading('Catalog desk','Manage posts','Review media, control visibility and keep the feed considered.')}<div class="toolbar"><h2>Posts</h2><button class="btn btn-gold btn-small" data-action="post-create">Add post</button></div>${searchField('Search captions')}<div class="filter-row"><select class="filter-select" data-filter="type" aria-label="Filter by media type"><option value="">All types</option><option value="image" ${state.filterType==='image'?'selected':''}>Images</option><option value="video" ${state.filterType==='video'?'selected':''}>Videos</option></select><select class="filter-select" data-filter="model" aria-label="Filter by model"><option value="">All models</option>${(await loadModels()).map(m=>`<option value="${esc(idOf(m))}" ${state.filterModel===idOf(m)?'selected':''}>${esc(modelName(m))}</option>`).join('')}</select></div><div class="table-list">${posts.length ? posts.map(p=>`<article class="table-row"><div class="table-row-main"><strong>${esc(postCaption(p)||'Untitled post')}</strong><small>${esc(modelName((p.model??p.models??{}) as AnyRecord))} · ${bool(p,'published','is_published','isPublished')?'Published':'Draft'}</small></div><button class="btn btn-outline btn-small" data-action="post-publish" data-id="${esc(idOf(p))}" data-published="${bool(p,'published','is_published','isPublished')}">${bool(p,'published','is_published','isPublished')?'Unpublish':'Publish'}</button><button class="btn btn-outline btn-small" data-action="post-edit" data-id="${esc(idOf(p))}">Edit</button><button class="btn btn-danger btn-small" data-action="post-delete" data-id="${esc(idOf(p))}">Delete</button></article>`).join('') : stateBlock('empty','No posts match these filters.')}</div>`;
 }
 function pageImport(): string {
@@ -287,7 +294,8 @@ function modalMarkup(): string {
     const models = d.models || [];
      return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="modal-head"><h2 id="dialog-title">${d.edit?'Edit post':'New post'}</h2><button class="icon-button" data-action="close-modal" aria-label="Close">${icon('close')}</button></div><form data-form="post"><input type="hidden" name="id" value="${esc(idOf(p))}"><div class="field"><label for="p-model">Model</label><select id="p-model" name="modelId" required><option value="">Choose a model</option>${models.map((m:AnyRecord)=>`<option value="${esc(idOf(m))}" ${(str(p,'model_id','modelId')===idOf(m)||idOf(p.model)===idOf(m))?'selected':''}>${esc(modelName(m))}</option>`).join('')}</select></div><div class="field"><label for="p-caption">Caption</label><textarea id="p-caption" name="caption">${esc(postCaption(p))}</textarea></div><div class="field"><label for="p-file-id">ZeroStorage file ID</label><input id="p-file-id" name="fileId" maxlength="255" value="${esc(str(p,'zerostorage_file_id','zerostorageFileId')||str(state.selectedFile,'id'))}" required></div><div class="field"><label for="p-filename">Filename</label><input id="p-filename" name="filename" maxlength="255" value="${esc(str(p,'filename')||str(state.selectedFile,'name'))}"></div><div class="field"><label for="p-source">Content source</label><select id="p-source" name="source" required><option value="">Choose a source</option><option value="ctele" ${str(p,'source')==='ctele'?'selected':''}>CTele · images only</option><option value="eb" ${str(p,'source')==='eb'?'selected':''}>EB · images only</option><option value="wt" ${str(p,'source')==='wt'?'selected':''}>WT · videos only</option></select></div><p class="muted small">Media type follows the source: CTele and EB files are images; WT files are videos.</p><div class="field"><label for="p-source-path">Folder path (optional)</label><input id="p-source-path" name="sourcePath" maxlength="1000" value="${esc(str(p,'source_path','sourcePath')||str(state.selectedFile,'source_path'))}"></div><div class="field"><label>Styles</label><div class="chips">${state.styles.map((st:AnyRecord)=>`<label class="chip"><input type="checkbox" name="styleIds" value="${esc(idOf(st))}" ${((Array.isArray(p.styles)&&p.styles.some((x:AnyRecord)=>idOf(x)===idOf(st)))||(Array.isArray(p.style_ids)&&p.style_ids.includes(idOf(st))))?'checked':''}> ${esc(str(st,'name'))}</label>`).join('') || '<span class="muted small">No styles have been added yet.</span>'}</div></div><div class="field"><label><input type="checkbox" name="published" ${bool(p,'published','is_published','isPublished')?'checked':''}> Published</label></div><button class="btn btn-gold btn-block" type="submit">${d.edit?'Save changes':'Create post'}</button></form></section></div>`;
   }
-  if (state.modal === 'confirm-delete') return `<div class="modal-backdrop"><section class="modal" role="alertdialog" aria-modal="true"><div class="modal-head"><h2>Remove this post?</h2><button class="icon-button" data-action="close-modal" aria-label="Close">${icon('close')}</button></div><p class="muted">This action cannot be undone.</p><div class="row"><button class="btn btn-danger" data-action="confirm-post-delete" data-id="${esc(d.id)}">Delete post</button><button class="btn" data-action="close-modal">Cancel</button></div></section></div>`;
+  if (state.modal === 'confirm-delete') return `<div class="modal-backdrop"><section class="modal" role="alertdialog" aria-modal="true"><div class="modal-head"><h2>Remove this post?</h2><button class="icon-button" data-action="close-modal" aria-label="Close">${icon('close')}</button></div><p class="muted">The post and its comments, Likes, MMCs and style links will be deleted. The original file remains in ZeroStorage.</p><div class="row"><button class="btn btn-danger" data-action="confirm-post-delete" data-id="${esc(d.id)}">Delete post</button><button class="btn" data-action="close-modal">Cancel</button></div></section></div>`;
+  if (state.modal === 'confirm-model-delete') return `<div class="modal-backdrop"><section class="modal" role="alertdialog" aria-modal="true" aria-labelledby="dialog-title"><div class="modal-head"><h2 id="dialog-title">Delete ${esc(d.name||'this model')}?</h2><button class="icon-button" data-action="close-modal" aria-label="Close">${icon('close')}</button></div><p class="muted">This permanently deletes the model, linked posts, comments, Likes, MMCs, follows and style links. The original files remain in ZeroStorage.</p><div class="row"><button class="btn btn-danger" data-action="confirm-model-delete" data-id="${esc(d.id)}">Delete model and posts</button><button class="btn" data-action="close-modal">Cancel</button></div></section></div>`;
   return '';
 }
 
@@ -433,11 +441,15 @@ async function handleAction(button: HTMLElement): Promise<void> {
         state.styles=list(await listStyles({limit:100,offset:0}));
         state.modal='model-form'; state.modalData={edit:false}; await render(); break;
       case 'model-edit': {
-        const models=await loadModels();
-        const model=models.find(x=>idOf(x)===id) || await getModelDetail(id) as AnyRecord;
+        const model=await getModelDetail(id);
+        if (!model) throw new Error('This model could not be found.');
         state.styles=list(await listStyles({limit:100,offset:0}));
         state.modal='model-form'; state.modalData={edit:true,model}; await render(); break;
       }
+      case 'model-delete':
+        state.modal='confirm-model-delete';
+        state.modalData={id,name:button.dataset.name||'this model'};
+        await render(); break;
       case 'post-create': {
         const [models,styles]=await Promise.all([loadModels(),listStyles({limit:100,offset:0})]);
         state.styles=list(styles);
@@ -487,6 +499,9 @@ async function handleAction(button: HTMLElement): Promise<void> {
         toast(!published?'Post published.':'Post unpublished.'); await render(); break;
       }
       case 'post-delete': state.modal='confirm-delete'; state.modalData={id}; await render(); break;
+      case 'confirm-model-delete':
+        await removeModel(id);
+        state.modal=''; state.modalData={}; toast('Model and linked posts deleted.'); await render(); break;
       case 'confirm-post-delete':
         await deletePost(id); state.modal=''; state.modalData={}; toast('Post deleted.'); await render(); break;
       case 'comment-delete':
@@ -530,8 +545,14 @@ async function handleSubmit(form: HTMLFormElement): Promise<void> {
   try {
     if (kind==='auth') {
       const mode=val('mode'), email=val('email'), password=val('password');
-      if (mode==='signup') await signUp(email,password,val('displayName'));
-      else await signIn(email,password);
+      if (mode==='signup') {
+        const hasSession=await signUp(email,password,val('displayName'));
+        if (!hasSession) {
+          state.modalData={authMode:'signin',authNotice:'Your account was created. Check your email for the confirmation link, then sign in.'};
+          await render();
+          return;
+        }
+      } else await signIn(email,password);
       await refreshSession(); state.modalData={}; go('/'); toast(mode==='signup'?'Your account is ready.':'Welcome back.'); return;
     }
     if (kind==='comment') {
@@ -557,13 +578,16 @@ async function handleSubmit(form: HTMLFormElement): Promise<void> {
     }
     if (kind==='post') {
       const id=val('id');
-      const source=val('source') as 'ctele'|'eb'|'wt';
+      const sourceValue=val('source');
+      if (!['ctele','eb','wt'].includes(sourceValue)) throw new Error('Choose a valid content source.');
+      const source=sourceValue as ContentSource;
+      const mediaType:MediaType=source==='wt'?'video':'image';
       const input={
         model_id:val('modelId'), caption:val('caption'),
         zerostorage_file_id:val('fileId').trim(),
         filename:val('filename').trim() || null,
         source,
-        type:source==='wt'?'video':'image',
+        type:mediaType,
         source_path:val('sourcePath').trim() || null,
         published:fd.has('published'),
         style_ids:fd.getAll('styleIds').map(String),
@@ -655,6 +679,7 @@ document.addEventListener('change', e => {
   if (!(select instanceof HTMLSelectElement)) return;
   if (select.dataset.filter==='type') state.filterType=select.value;
   if (select.dataset.filter==='model') state.filterModel=select.value;
+  if (select.dataset.filter==='type' && !['','image','video'].includes(state.filterType)) state.filterType='';
   if (select.dataset.filter) void render();
 });
 document.addEventListener('keydown', e => {
@@ -682,13 +707,19 @@ document.addEventListener('error', e => {
   }
 }, true);
 window.addEventListener('popstate',()=>{state.route=parseRoute();void render();});
-onAuthChange(async user=>{
+try { onAuthChange(async user=>{
   state.user=user;
   try {
     state.profile=user?await getMyProfile():null;
-    const ids=user?await getFollowedModelIds():[];
-    state.followed=new Set(list(ids).map(x=>typeof x==='string'?x:idOf(x)));
+    if (user) {
+      const [ids,styleIds]=await Promise.all([getFollowedModelIds(),getFollowedStyleIds()]);
+      state.followed=new Set(ids);
+      state.followedStyles=new Set(styleIds);
+    } else {
+      state.followed.clear();
+      state.followedStyles.clear();
+    }
   } catch (err) { state.profile=null; state.error=userError(err); }
   void render();
-});
+}); } catch (err) { state.error=userError(err); }
 void refreshSession().then(()=>render());

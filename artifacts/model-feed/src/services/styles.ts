@@ -89,9 +89,10 @@ export async function getStyleDetail(slug: string): Promise<StyleDetail | null> 
   if (modelsResult.error) throw new Error(`Could not load related models: ${modelsResult.error.message}`);
   if (postLinks.error) throw new Error(`Could not load related posts: ${postLinks.error.message}`);
 
-  const models = (modelsResult.data ?? [])
-    .map((row) => row.models)
-    .filter((row): row is Model => row !== null) as Model[];
+  const models = (modelsResult.data ?? []).flatMap((row) => {
+    const related = row.models as unknown as Model | Model[] | null;
+    return Array.isArray(related) ? related : related ? [related] : [];
+  });
   const posts: Post[] = await listPosts({
     limit: 24,
     offset: 0,

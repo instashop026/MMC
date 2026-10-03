@@ -17,7 +17,7 @@ run = "pnpm --filter @workspace/model-feed run dev"
 [services.production]
 build = [ "pnpm", "--filter", "@workspace/model-feed", "run", "build" ]
 serve = "static"
-publicDir = "artifacts/model-feed/dist/public"
+publicDir = "artifacts/model-feed/dist"
 
 [[services.production.rewrites]]
 from = "/*"

@@ -29,6 +29,18 @@ export async function listModels({
   return (data ?? []) as Model[];
 }
 
+export async function listFollowedModels(): Promise<Model[]> {
+  const ids = await getFollowedModelIds();
+  if (ids.length === 0) return [];
+  const { data, error } = await getSupabase()
+    .from("models")
+    .select("id,name,username,slug,description,profile_image_url,published,created_at,updated_at")
+    .in("id", ids)
+    .order("name", { ascending: true });
+  if (error) throw new Error(`Could not load followed models: ${error.message}`);
+  return (data ?? []) as Model[];
+}
+
 export async function getModelDetail(slug: string): Promise<ModelDetail | null> {
   let query = getSupabase()
     .from("models")
@@ -52,9 +64,10 @@ export async function getModelDetail(slug: string): Promise<ModelDetail | null> 
   if (stylesResult.error) {
     throw new Error(`Could not load this model's styles: ${stylesResult.error.message}`);
   }
-  const styles = (stylesResult.data ?? [])
-    .map((row) => row.styles)
-    .filter((row): row is Style => row !== null) as Style[];
+  const styles = (stylesResult.data ?? []).flatMap((row) => {
+    const related = row.styles as unknown as Style | Style[] | null;
+    return Array.isArray(related) ? related : related ? [related] : [];
+  });
 
   return {
     ...model,

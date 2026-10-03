@@ -39,13 +39,14 @@ export async function signUp(
   email: string,
   password: string,
   displayName: string,
-): Promise<void> {
-  const { error } = await getSupabase().auth.signUp({
+): Promise<boolean> {
+  const { data, error } = await getSupabase().auth.signUp({
     email: email.trim(),
     password,
     options: { data: { display_name: displayName.trim() } },
   });
   if (error) throw new Error(`Account creation failed: ${error.message}`);
+  return Boolean(data.session);
 }
 
 export async function signOut(): Promise<void> {

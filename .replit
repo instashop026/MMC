@@ -21,3 +21,11 @@ timeoutMs = 20000
 
 [nix]
 channel = "stable-25_05"
+
+[userenv]
+
+[userenv.shared]
+SUPABASE_URL = "https://asibbzaxxetzukkxfkks.supabase.co"
+SUPABASE_PUBLISHABLE_KEY = "sb_publishable_H-PZNpzM8Gmj9FI-3kjOzw_mnybit5o"
+ZEROSTORAGE_API_KEY = "sk_9ivbT-4TTYNdJsey1fU3DkffT1m-ivtg"
+SUPABASE_SERVICE_ROLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFzaWJiemF4eGV0enVra3hma2tzIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDk1MzQ2NSwiZXhwIjoyMTA2NTI5NDY1fQ.poBOTdwecWBm8sygzcxYiiroz2Lk1idEC5aFBPDw8Lc"
