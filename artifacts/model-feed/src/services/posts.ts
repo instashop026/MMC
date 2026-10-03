@@ -22,6 +22,23 @@ export interface ListPostsOptions {
   postIds?: string[];
 }
 
+export async function findImportedFileIds(fileIds: string[]): Promise<Set<string>> {
+  const uniqueIds = [...new Set(fileIds.filter((id) => id.trim()))];
+  const imported = new Set<string>();
+  for (let start = 0; start < uniqueIds.length; start += 80) {
+    const batch = uniqueIds.slice(start, start + 80);
+    const { data, error } = await getSupabase()
+      .from("posts")
+      .select("zerostorage_file_id")
+      .in("zerostorage_file_id", batch);
+    if (error) throw new Error(`Could not check already-imported ZeroStorage files: ${error.message}`);
+    for (const row of data ?? []) {
+      if (typeof row.zerostorage_file_id === "string") imported.add(row.zerostorage_file_id);
+    }
+  }
+  return imported;
+}
+
 function escapeSearch(value: string): string {
   return value.replace(/[%_\\]/g, "\\$&").trim().slice(0, 100);
 }
@@ -71,7 +88,7 @@ export async function listPosts({
   const [modelsResult, styleResult, stats] = await Promise.all([
     client
       .from("models")
-      .select("id,name,username,slug,description,profile_image_url,published,created_at,updated_at")
+      .select("id,name,username,slug,description,profile_image_url,profile_image_zerostorage_file_id,published,created_at,updated_at")
       .in("id", modelIds),
     client
       .from("post_styles")

@@ -48,6 +48,45 @@ function normalizeStyle(name: string): { cleanName: string; slug: string } {
   return { cleanName, slug };
 }
 
+function normalizedStyleName(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+async function allStyles(): Promise<Style[]> {
+  const result: Style[] = [];
+  for (let offset = 0; ; offset += 100) {
+    const page = await listStyles({ limit: 100, offset });
+    result.push(...page);
+    if (page.length < 100) return result;
+  }
+}
+
+export async function findOrCreateStyle(name: string): Promise<Style> {
+  const candidate = normalizeStyle(name);
+  const matches = (styles: Style[]) => styles.find((style) =>
+    style.slug === candidate.slug
+    || normalizedStyleName(style.name) === normalizedStyleName(candidate.cleanName),
+  );
+  const existing = matches(await allStyles());
+  if (existing) return existing;
+
+  try {
+    return await createStyle(candidate.cleanName);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/23505|already exists|duplicate key/i.test(message)) throw error;
+    const raced = matches(await allStyles());
+    if (raced) return raced;
+    throw error;
+  }
+}
+
 export async function updateStyle(id: string, name: string): Promise<Style> {
   const { cleanName, slug } = normalizeStyle(name);
   const { data, error } = await getSupabase()
@@ -82,7 +121,7 @@ export async function getStyleDetail(slug: string): Promise<StyleDetail | null> 
   const [modelsResult, postLinks] = await Promise.all([
     getSupabase()
       .from("model_styles")
-      .select("model_id,models(id,name,username,slug,description,profile_image_url,published,created_at,updated_at)")
+      .select("model_id,models(id,name,username,slug,description,profile_image_url,profile_image_zerostorage_file_id,published,created_at,updated_at)")
       .eq("style_id", style.id),
     getSupabase().from("post_styles").select("post_id").eq("style_id", style.id),
   ]);

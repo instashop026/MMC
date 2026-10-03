@@ -1,0 +1,1239 @@
+# Fix Admin CMS: ZeroStorage File Manager, Model Profile Images, Gallery Import, and Video Import
+
+The Supabase database is now working and the current app is connected successfully.
+
+We need to improve the `/admin` CMS substantially.
+
+## IMPORTANT EXISTING SETUP
+
+The project already has:
+
+* Supabase configured and working.
+* Supabase migrations applied.
+* `ZEROSTORAGE_API_KEY` already configured in Replit Secrets.
+* ZeroStorage documentation has already been reviewed during this project.
+* ZeroStorage is the actual media storage/source for this application.
+* The ZeroStorage root folder for this application is:
+
+```text
+0RMCOIN/
+```
+
+Do NOT ask me to add the ZeroStorage API key again.
+
+Do NOT expose `ZEROSTORAGE_API_KEY` to browser/client code.
+
+Do NOT create a second media-storage system.
+
+Use the existing server-side Netlify Function / server-side ZeroStorage integration pattern so the API key remains secret.
+
+Before changing the ZeroStorage integration, inspect the existing implementation and use the actual ZeroStorage API endpoints/response structures already established in the project. Do not invent endpoints.
+
+---
+
+# CURRENT PROBLEM
+
+The current Admin UI is too basic.
+
+For Models we currently have fields such as:
+
+* Name
+* Slug
+* ID
+* Picture URL
+* Styles
+
+For Posts we have basic post creation/linking.
+
+We need to turn this into a proper ZeroStorage browser and importer.
+
+The admin should be able to browse:
+
+```text
+0RMCOIN/
+```
+
+and navigate through folders/subfolders, go back, see files, select files/folders, and use the selected ZeroStorage items in the appropriate admin workflow.
+
+---
+
+# PART 1 — REUSABLE ZEROSTORAGE FILE BROWSER
+
+Build a reusable ZeroStorage browser component/modal that can be opened from different admin workflows.
+
+It should start at:
+
+```text
+0RMCOIN/
+```
+
+The browser must support:
+
+* folder navigation
+* opening folders
+* going back to the previous folder
+* breadcrumb navigation
+* showing files
+* showing folders
+* filename
+* appropriate media type
+* selection
+* multi-selection where appropriate
+* Select All where appropriate
+* deselect individual items
+* loading states
+* API errors
+* empty folders
+* disabled/incompatible files when a workflow has media-type restrictions
+
+The browser should NOT allow the admin to leave the `0RMCOIN` root.
+
+Treat:
+
+```text
+0RMCOIN/
+```
+
+as the application's ZeroStorage root.
+
+Do not expose the ZeroStorage API key to the client.
+
+---
+
+# PART 2 — BROWSER MODE SELECTION
+
+Because different ZeroStorage folders represent different types of content, when opening the browser for post importing, provide a clear mode selection.
+
+When appropriate, show:
+
+```text
+Choose Import Type
+
+[ Set Galleries ]
+
+[ Set Videos ]
+```
+
+The selected mode determines the selection behavior.
+
+## Gallery mode
+
+Gallery mode is intended for:
+
+```text
+0RMCOIN/CTele/
+0RMCOIN/EB/
+```
+
+These contain image galleries.
+
+## Video mode
+
+Video mode is intended for:
+
+```text
+0RMCOIN/WT/
+```
+
+These contain videos.
+
+Do not assume a source title saying "photos and video" means that a video exists.
+
+The actual ZeroStorage files determine the media type.
+
+---
+
+# PART 3 — ADD MODEL — PROFILE IMAGE
+
+Modify the Add Model page.
+
+The model form should contain:
+
+* Name
+* Username
+* Slug
+* Description
+* Profile Image
+* Styles
+* Published
+
+Keep the existing URL option.
+
+For Profile Image provide two ways:
+
+```text
+Profile Image URL
+[____________________________]
+
+OR
+
+[ Choose from ZeroStorage ]
+```
+
+When the admin clicks:
+
+```text
+Choose from ZeroStorage
+```
+
+open the reusable ZeroStorage browser modal.
+
+The browser should allow navigation through:
+
+```text
+0RMCOIN/
+```
+
+and its folders/subfolders.
+
+For the model profile image workflow:
+
+* only image files should be selectable
+* video files should not be selectable
+* the admin can navigate through folders
+* select one image
+* click `Set`
+
+After clicking `Set`, close the browser and populate the model's profile image using the selected ZeroStorage file.
+
+Do NOT simply store an obsolete ZeroStorage URL if the project can derive the current URL from the file ID.
+
+Store the canonical:
+
+```text
+zerostorage_file_id
+```
+
+or the appropriate existing model profile-image reference structure.
+
+Then generate the correct current display URL from the file ID.
+
+If the existing model schema currently only has `profile_image_url`, inspect the schema and make the smallest clean migration necessary to support a canonical ZeroStorage file reference.
+
+Do not break existing URL-based profile images.
+
+The admin should be able to use either:
+
+1. external/manual URL
+2. ZeroStorage image
+
+---
+
+# PART 4 — STYLES MUST BE AVAILABLE DIRECTLY FROM MODEL AND POST FORMS
+
+Styles should NOT require the admin to leave the current workflow just to create a style.
+
+The existing Add Style section can remain.
+
+But both:
+
+```text
+Add Model
+Add Post
+```
+
+must support:
+
+* selecting existing styles
+* creating a new style directly from the form
+* immediately using the newly created style
+
+For example:
+
+```text
+Styles
+
+[ Fashion ] [ Cosplay ] [ Outdoor ]
+
+[ + Add Style ]
+```
+
+When clicking `+ Add Style`:
+
+* open a small inline control/modal
+* enter style name
+* create it in Supabase
+* add it to the available styles
+* automatically make it selectable in the current workflow
+
+Prevent duplicate styles using the existing normalized style/slug logic.
+
+Use the existing Supabase styles architecture instead of creating a second style system.
+
+---
+
+# PART 5 — ADD POST — ZERO STORAGE IMPORT
+
+The Add Post page should start with the existing model selection.
+
+Example:
+
+```text
+Model
+[ Select Model ▼ ]
+
+[ Select Posts from ZeroStorage ]
+```
+
+The model selection remains the model that all selected files will be linked to.
+
+Clicking:
+
+```text
+Select Posts from ZeroStorage
+```
+
+opens the ZeroStorage browser.
+
+First allow the admin to choose:
+
+```text
+Set Galleries
+Set Videos
+```
+
+---
+
+# PART 6 — GALLERY IMPORT WORKFLOW
+
+Gallery mode is designed for:
+
+```text
+0RMCOIN/CTele/
+0RMCOIN/EB/
+```
+
+Typical structure:
+
+```text
+0RMCOIN/
+  CTele/
+    Model A/
+      Gallery 1/
+        image1.jpg
+        image2.jpg
+        image3.jpg
+
+      Gallery 2/
+        image4.jpg
+        image5.jpg
+
+    Model B/
+      Gallery 1/
+        ...
+```
+
+The admin should be able to navigate to the model folder.
+
+The admin can select:
+
+* one image file
+* multiple image files
+* one folder
+* multiple folders
+
+Folders are particularly important because galleries are represented by folders.
+
+---
+
+# PART 7 — SELECTING GALLERY FOLDERS
+
+Example:
+
+Admin navigates to:
+
+```text
+0RMCOIN/CTele/Model A/
+```
+
+and sees:
+
+```text
+Gallery 1
+Gallery 2
+Gallery 3
+Gallery 4
+```
+
+The admin can select:
+
+```text
+Gallery 1
+Gallery 2
+Gallery 3
+Gallery 4
+```
+
+and click:
+
+```text
+Set
+```
+
+The application must then inspect the selected folders and find their actual image files.
+
+IMPORTANT:
+
+A selected folder does NOT become one post.
+
+Every image file inside that selected folder becomes its own independent post.
+
+Example:
+
+```text
+Gallery 1
+  image1.jpg
+  image2.jpg
+  image3.jpg
+```
+
+creates:
+
+```text
+Post 1 → image1.jpg
+Post 2 → image2.jpg
+Post 3 → image3.jpg
+```
+
+All posts belong to the selected Model.
+
+---
+
+# PART 8 — GALLERY REVIEW SCREEN
+
+After clicking `Set`, do NOT immediately publish.
+
+Open a review/configuration area.
+
+For every selected gallery folder, show something like:
+
+```text
+Gallery 1
+
+Caption for all posts in this gallery:
+[ Gallery 1 __________________ ]
+
+Styles for these posts:
+[ Fashion ] [ Cosplay ]
+
+[ + Add Style ]
+```
+
+If four folders were selected:
+
+```text
+Gallery 1
+Caption: [........................]
+Styles:  [ Fashion ] [ Cosplay ]
+
+Gallery 2
+Caption: [........................]
+Styles:  [ Outdoor ]
+
+Gallery 3
+Caption: [........................]
+Styles:  [ Fashion ] [ Beach ]
+
+Gallery 4
+Caption: [........................]
+Styles:  [ Cosplay ]
+```
+
+The folder name should automatically populate the caption initially.
+
+The caption must be editable.
+
+---
+
+# PART 9 — GALLERY STYLE ASSIGNMENT
+
+Styles selected for a gallery apply to every image post created from that gallery.
+
+Example:
+
+```text
+Gallery 1
+30 images
+
+Caption:
+Summer Beach Set
+
+Styles:
+Beach
+Outdoor
+Fashion
+```
+
+After publishing:
+
+```text
+30 posts
+```
+
+are created, and every one has:
+
+```text
+caption = "Summer Beach Set"
+
+styles =
+Beach
+Outdoor
+Fashion
+```
+
+Do not require the admin to edit the 30 posts individually.
+
+The folder is simply an import grouping mechanism.
+
+There is NO public Gallery entity/page.
+
+---
+
+# PART 10 — MULTIPLE GALLERIES
+
+If the admin selects four folders:
+
+```text
+Gallery A
+Gallery B
+Gallery C
+Gallery D
+```
+
+each folder gets its own review/configuration row.
+
+The admin can independently edit:
+
+* caption
+* styles
+
+for each folder.
+
+Example:
+
+```text
+Gallery A
+Caption: Cinderella Crystal Wave
+Styles: Cosplay, Blonde
+
+Gallery B
+Caption: Summer Outdoor
+Styles: Outdoor, Fashion
+
+Gallery C
+Caption: Black Dress
+Styles: Fashion
+
+Gallery D
+Caption: Beach Set
+Styles: Beach, Outdoor
+```
+
+Then:
+
+```text
+[ Verify & Publish ]
+```
+
+creates all corresponding image posts.
+
+---
+
+# PART 11 — VERIFY & PUBLISH
+
+Before publishing, show a summary:
+
+```text
+Model:
+Jane Doe
+
+Selected galleries:
+4
+
+Total image files:
+76
+
+Posts to create:
+76
+```
+
+Then show the folder-level configuration.
+
+Button:
+
+```text
+Verify & Publish
+```
+
+Before creating posts:
+
+1. Validate that all selected files are still available.
+2. Validate that each selected file has a ZeroStorage file ID.
+3. Detect already-imported files.
+4. Use the existing unique `zerostorage_file_id` constraint.
+5. Do not create duplicates.
+6. Show which files are already imported.
+7. Do not delete anything from ZeroStorage.
+
+If everything is valid:
+
+```text
+76 image files
+→ 76 posts
+```
+
+Create them in Supabase.
+
+---
+
+# PART 12 — DUPLICATE DETECTION
+
+ZeroStorage file ID is the canonical media identity.
+
+Before creating posts, check existing posts by:
+
+```text
+zerostorage_file_id
+```
+
+If a file already exists:
+
+```text
+Already imported
+```
+
+Do not create another post.
+
+The review UI should make this understandable.
+
+Example:
+
+```text
+Gallery 1
+30 files
+
+28 new
+2 already imported
+```
+
+The admin should still be able to continue publishing the new files.
+
+---
+
+# PART 13 — VIDEO IMPORT WORKFLOW
+
+Video mode is different.
+
+It is intended primarily for:
+
+```text
+0RMCOIN/WT/
+```
+
+Typical structure:
+
+```text
+0RMCOIN/
+  WT/
+    Model A/
+      video1.mp4
+      video2.mp4
+      video3.mp4
+
+    Model B/
+      video4.mp4
+      video5.mp4
+```
+
+The admin navigates through the ZeroStorage folders until reaching the model folder.
+
+---
+
+# PART 14 — SELECT ALL VIDEOS
+
+When the admin opens a model folder in Video mode, provide:
+
+```text
+[ Select All ]
+```
+
+The admin can select all compatible video files in that folder.
+
+For example:
+
+```text
+video1.mp4   ✓
+video2.mp4   ✓
+video3.mp4   ✓
+video4.mp4   ✓
+```
+
+`Select All` should select all compatible video files currently in that folder.
+
+The admin must also be able to manually deselect individual files.
+
+Example:
+
+```text
+Select All
+
+video1.mp4 ✓
+video2.mp4 ✓
+video3.mp4 ✕
+video4.mp4 ✓
+```
+
+---
+
+# PART 15 — VIDEO CAPTIONS
+
+When videos are selected and the admin clicks:
+
+```text
+Set
+```
+
+each video becomes an independent post.
+
+The initial caption should be the filename.
+
+Example:
+
+```text
+my_video_01.mp4
+```
+
+initial caption:
+
+```text
+my_video_01
+```
+
+Remove only the file extension from the caption.
+
+The caption should remain editable during review.
+
+---
+
+# PART 16 — VIDEO FILENAME HASHTAGS → STYLES
+
+Video filenames may contain hashtags.
+
+Example:
+
+```text
+video_01 #cosplay #blonde #outdoor.mp4
+```
+
+The importer should detect hashtag tokens in the filename.
+
+For example:
+
+```text
+#cosplay
+#blonde
+#outdoor
+```
+
+becomes styles:
+
+```text
+Cosplay
+Blonde
+Outdoor
+```
+
+These styles apply only to that specific video post.
+
+IMPORTANT:
+
+Do not create a giant complicated hashtag parser.
+
+Use a simple robust pattern that detects `#word` tokens.
+
+Normalize the style name according to the existing style normalization system.
+
+If the style already exists:
+
+```text
+use existing style
+```
+
+If it does not exist:
+
+```text
+create the style
+```
+
+Then attach it to that specific post.
+
+The hashtag itself does not need to remain in the caption unless that is already part of the existing product behavior.
+
+The important requirement is:
+
+```text
+filename hashtag
+        ↓
+style
+        ↓
+post_style
+```
+
+---
+
+# PART 17 — VIDEO REVIEW
+
+After selecting videos and clicking `Set`, show a review list.
+
+Example:
+
+```text
+Model: Jane Doe
+
+Videos
+
+1.
+Filename: summer_video_01 #outdoor #fashion.mp4
+
+Caption:
+[ summer_video_01 ]
+
+Styles:
+[ Outdoor ] [ Fashion ]
+
+2.
+Filename: cosplay_02 #cosplay #blonde.mp4
+
+Caption:
+[ cosplay_02 ]
+
+Styles:
+[ Cosplay ] [ Blonde ]
+```
+
+Allow the admin to edit captions and styles before publishing.
+
+Button:
+
+```text
+Verify & Publish
+```
+
+---
+
+# PART 18 — MEDIA TYPE VALIDATION
+
+The importer must respect the selected mode.
+
+Gallery mode:
+
+* images allowed
+* videos not allowed
+
+Video mode:
+
+* videos allowed
+* images not allowed
+
+If the ZeroStorage API provides MIME/type information, use it.
+
+Otherwise use the file extension as a fallback.
+
+Do not blindly import incompatible files.
+
+---
+
+# PART 19 — MODEL FOLDER MATCHING
+
+The admin should NOT need to manually type a ZeroStorage path.
+
+The workflow is:
+
+```text
+0RMCOIN
+ ↓
+CTele / EB / WT
+ ↓
+Model folder
+ ↓
+Gallery folder OR video files
+```
+
+The selected model in the Add Post page is the Supabase model that receives the posts.
+
+Do not automatically assume that the ZeroStorage folder name and Supabase model name are identical.
+
+The admin explicitly chooses the Supabase model first.
+
+---
+
+# PART 20 — PROFILE IMAGE REUSE
+
+The same ZeroStorage browser component should be reusable for:
+
+```text
+Add Model → Profile Image
+```
+
+and:
+
+```text
+Add Post → Select Posts
+```
+
+Do not build separate unrelated file-browser implementations.
+
+Create a reusable service/component architecture.
+
+For example:
+
+```text
+ZeroStorageBrowser
+ZeroStorageService
+ZeroStorageSelection
+```
+
+Use appropriate names based on the existing project conventions.
+
+---
+
+# PART 21 — SERVER-SIDE ZERO STORAGE ACCESS
+
+The ZeroStorage API key:
+
+```text
+ZEROSTORAGE_API_KEY
+```
+
+already exists in Replit Secrets.
+
+Keep it server-side.
+
+Never:
+
+```text
+VITE_ZEROSTORAGE_API_KEY
+```
+
+Never put it in:
+
+* frontend JavaScript
+* browser localStorage
+* public environment variables
+* HTML
+* client bundles
+
+The browser should call our server-side endpoint/function.
+
+The server-side function calls ZeroStorage.
+
+---
+
+# PART 22 — CURRENT ZERO STORAGE URL RULE
+
+The ZeroStorage file ID is canonical.
+
+Do not rely on old CSV URLs.
+
+Generate current URLs from the file ID using the existing helper/service.
+
+For images, use the current ZeroStorage image embed/view format already established in this project.
+
+For videos, use the current ZeroStorage video embed/watch format already established in this project.
+
+Do not store outdated:
+
+```text
+upload.zerostorage.net/api/files/.../view
+```
+
+URLs as canonical media references.
+
+---
+
+# PART 23 — DATABASE
+
+Use the existing Supabase schema.
+
+Do not create duplicate tables unnecessarily.
+
+Posts should continue to represent individual media files.
+
+The important post identity is:
+
+```text
+zerostorage_file_id
+```
+
+A gallery folder is NOT a post.
+
+A gallery folder is only an import grouping mechanism used during the admin workflow.
+
+If the current schema lacks the necessary canonical ZeroStorage profile-image field, make a clean migration rather than abusing unrelated fields.
+
+Before changing the schema, inspect the existing migration/schema and reuse what is already available.
+
+---
+
+# PART 24 — ADMIN SECURITY
+
+Only users whose:
+
+```text
+profiles.role = 'admin'
+```
+
+can:
+
+* browse ZeroStorage through the protected admin browser
+* create models
+* create styles
+* create posts
+* import ZeroStorage files
+* publish content
+
+Do not rely only on hiding buttons.
+
+Existing Supabase RLS/security rules must remain enforced.
+
+---
+
+# PART 25 — UI/UX
+
+Keep the existing visual language.
+
+Dark premium interface.
+
+The ZeroStorage browser should feel like a clean file manager:
+
+```text
+← Back
+
+0RMCOIN / CTele / Model A
+
+📁 Gallery 1
+📁 Gallery 2
+📁 Gallery 3
+
+🖼 image001.jpg
+🖼 image002.jpg
+
+[ Select All ]
+
+Selected: 2
+
+[ Cancel ] [ Set ]
+```
+
+For video mode:
+
+```text
+← Back
+
+0RMCOIN / WT / Model A
+
+🎬 video001.mp4
+🎬 video002.mp4
+🎬 video003.mp4
+
+[ Select All ]
+
+Selected: 3
+
+[ Cancel ] [ Set ]
+```
+
+On mobile, this should be a proper full-screen or near-full-screen modal/sheet rather than a tiny desktop dialog.
+
+---
+
+# PART 26 — IMPORTANT: DO NOT REMOVE EXISTING FUNCTIONALITY
+
+Do not break:
+
+* Supabase authentication
+* RLS
+* model pages
+* posts
+* styles
+* feed
+* likes
+* MMC
+* comments
+* existing manual URL workflow
+* existing admin pages
+
+The new ZeroStorage functionality should extend the existing CMS.
+
+---
+
+# PART 27 — IMPLEMENTATION APPROACH
+
+Before coding:
+
+1. Inspect the current Model Feed code.
+2. Inspect the existing admin routes/components.
+3. Inspect the existing Supabase schema.
+4. Inspect the existing ZeroStorage server/function implementation.
+5. Inspect how current posts and models are created.
+6. Inspect the existing style implementation.
+
+Then implement the reusable ZeroStorage browser and integrate it into:
+
+```text
+Add Model
+Add Post
+```
+
+Do not rewrite the application unnecessarily.
+
+Keep the implementation modular.
+
+Prefer:
+
+```text
+ZeroStorage API service
+        ↓
+server-side browser endpoint
+        ↓
+reusable ZeroStorage browser UI
+        ↓
+selection result
+        ↓
+Model/Post form
+```
+
+---
+
+# PART 28 — TESTING
+
+After implementation, test all of these cases:
+
+### Model
+
+* Create model with manual profile URL.
+* Create model with ZeroStorage profile image.
+* Browse folders.
+* Go back.
+* Select an image.
+* Set image.
+* Save model.
+
+### Styles
+
+* Select existing style.
+* Create style from Add Model.
+* Create style from Add Post.
+* Verify new style becomes selectable immediately.
+
+### Gallery
+
+* Open Add Post.
+* Select model.
+* Open ZeroStorage.
+* Choose Gallery mode.
+* Navigate to CTele.
+* Navigate to model folder.
+* Select one gallery.
+* Set.
+* Verify image files are discovered.
+* Edit gallery caption.
+* Add styles.
+* Publish.
+* Verify each image became its own post.
+
+### Multiple galleries
+
+* Select multiple folders.
+* Verify each folder gets its own caption/style configuration.
+* Verify each image gets the correct folder's caption/styles.
+
+### Video
+
+* Open Add Post.
+* Choose Video mode.
+* Navigate to WT/model folder.
+* Select All.
+* Deselect one.
+* Set.
+* Verify each selected video becomes its own post.
+* Verify filename becomes initial caption.
+* Verify hashtags in filename become styles.
+* Publish.
+
+### Duplicate
+
+Import an already imported ZeroStorage file.
+
+Verify it is detected and no duplicate post is created.
+
+### Security
+
+Verify a normal user cannot use the admin ZeroStorage browser endpoint.
+
+Verify the ZeroStorage API key never appears in browser source/network responses.
+
+---
+
+# FINAL REQUIREMENT
+
+Do not stop after making the UI.
+
+The complete workflow must actually work end-to-end:
+
+```text
+Admin
+ ↓
+ZeroStorage Browser
+ ↓
+0RMCOIN
+ ↓
+folders/files
+ ↓
+select
+ ↓
+Set
+ ↓
+review/configure captions + styles
+ ↓
+Verify & Publish
+ ↓
+Supabase posts
+ ↓
+public Model Feed
+```
+
+For gallery folders:
+
+```text
+1 folder
+ ↓
+N image files
+ ↓
+N individual image posts
+```
+
+For videos:
+
+```text
+N selected video files
+ ↓
+N individual video posts
+```
+
+ZeroStorage remains the media source.
+
+Supabase stores the application metadata and relationships.
+
+Do not implement CSV import as part of this task.
+
+After implementation, run:
+
+```bash
+pnpm run typecheck
+pnpm run build
+```
+
+Fix all type errors and build errors before finishing.
+
+Also update `README.md` and `replit.md` so they describe the actual current architecture and the new ZeroStorage admin workflow rather than the old/default Replit template architecture.

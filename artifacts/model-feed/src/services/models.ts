@@ -18,7 +18,7 @@ export async function listModels({
   const end = start + Math.min(Math.max(limit, 1), 100) - 1;
   let query = getSupabase()
     .from("models")
-    .select("id,name,username,slug,description,profile_image_url,published,created_at,updated_at")
+    .select("id,name,username,slug,description,profile_image_url,profile_image_zerostorage_file_id,published,created_at,updated_at")
     .order("name", { ascending: true })
     .range(start, end);
   const term = search?.trim();
@@ -34,7 +34,7 @@ export async function listFollowedModels(): Promise<Model[]> {
   if (ids.length === 0) return [];
   const { data, error } = await getSupabase()
     .from("models")
-    .select("id,name,username,slug,description,profile_image_url,published,created_at,updated_at")
+    .select("id,name,username,slug,description,profile_image_url,profile_image_zerostorage_file_id,published,created_at,updated_at")
     .in("id", ids)
     .order("name", { ascending: true });
   if (error) throw new Error(`Could not load followed models: ${error.message}`);
@@ -44,7 +44,7 @@ export async function listFollowedModels(): Promise<Model[]> {
 export async function getModelDetail(slug: string): Promise<ModelDetail | null> {
   let query = getSupabase()
     .from("models")
-    .select("id,name,username,slug,description,profile_image_url,published,created_at,updated_at")
+    .select("id,name,username,slug,description,profile_image_url,profile_image_zerostorage_file_id,published,created_at,updated_at")
   query = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(slug)
     ? query.eq("id", slug)
     : query.eq("slug", slug);
@@ -85,13 +85,16 @@ export async function createModel(input: ModelInput): Promise<Model> {
     username: input.username?.trim() || null,
     slug: input.slug.trim(),
     description: input.description?.trim() || null,
-    profile_image_url: input.profile_image_url?.trim() || null,
+    profile_image_url: input.profile_image_zerostorage_file_id?.trim()
+      ? null
+      : input.profile_image_url?.trim() || null,
+    profile_image_zerostorage_file_id: input.profile_image_zerostorage_file_id?.trim() || null,
     published: input.published,
   };
   const { data, error } = await getSupabase()
     .from("models")
     .insert(payload)
-    .select("id,name,username,slug,description,profile_image_url,published,created_at,updated_at")
+    .select("id,name,username,slug,description,profile_image_url,profile_image_zerostorage_file_id,published,created_at,updated_at")
     .single();
   if (error) {
     const message = error.code === "23505" ? "A model with that username or slug already exists." : error.message;
@@ -107,7 +110,17 @@ export async function updateModel(id: string, input: Partial<ModelInput>): Promi
   if (input.slug !== undefined) payload.slug = input.slug.trim();
   if (input.description !== undefined) payload.description = input.description?.trim() || null;
   if (input.profile_image_url !== undefined) {
-    payload.profile_image_url = input.profile_image_url?.trim() || null;
+    const url = input.profile_image_url?.trim() || null;
+    payload.profile_image_url = url;
+    if (url) payload.profile_image_zerostorage_file_id = null;
+  }
+  if (input.profile_image_zerostorage_file_id !== undefined) {
+    const fileId = input.profile_image_zerostorage_file_id?.trim() || null;
+    if (fileId && (fileId.length > 255 || /[/\\]/.test(fileId))) {
+      throw new Error("The ZeroStorage profile image ID is invalid.");
+    }
+    payload.profile_image_zerostorage_file_id = fileId;
+    if (fileId) payload.profile_image_url = null;
   }
   if (input.published !== undefined) payload.published = input.published;
   if (Object.keys(payload).length === 0) throw new Error("Provide at least one model field to update.");
@@ -116,7 +129,7 @@ export async function updateModel(id: string, input: Partial<ModelInput>): Promi
     .from("models")
     .update(payload)
     .eq("id", id)
-    .select("id,name,username,slug,description,profile_image_url,published,created_at,updated_at")
+    .select("id,name,username,slug,description,profile_image_url,profile_image_zerostorage_file_id,published,created_at,updated_at")
     .single();
   if (error) {
     const message = error.code === "23505" ? "A model with that username or slug already exists." : error.message;

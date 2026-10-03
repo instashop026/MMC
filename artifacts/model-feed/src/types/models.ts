@@ -19,6 +19,7 @@ export interface Model {
   slug: string;
   description: string | null;
   profile_image_url: string | null;
+  profile_image_zerostorage_file_id: string | null;
   published: boolean;
   created_at: string;
   updated_at: string;
@@ -97,6 +98,7 @@ export interface ModelInput {
   slug: string;
   description?: string | null;
   profile_image_url?: string | null;
+  profile_image_zerostorage_file_id?: string | null;
   published: boolean;
 }
 
