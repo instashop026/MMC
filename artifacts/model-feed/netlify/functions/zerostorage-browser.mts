@@ -42,6 +42,29 @@ function boundedInteger(value: string | null, fallback: number, max: number): nu
   return parsed;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function listFromPayload(payload: ZeroListResponse<unknown>, resource: Resource): unknown[] | null {
+  const data = payload.data;
+  const nested = isRecord(data) ? data : null;
+  const candidates = [
+    payload[resource],
+    nested?.[resource],
+    payload.items,
+    nested?.items,
+    Array.isArray(data) ? data : undefined,
+  ];
+  return candidates.find(Array.isArray) as unknown[] | undefined ?? null;
+}
+
+function numberFromPayload(payload: ZeroListResponse<unknown>, key: "total" | "page" | "limit"): number | undefined {
+  const nested = isRecord(payload.data) ? payload.data : null;
+  const value = payload[key] ?? nested?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 function safeFolderId(value: string | null): string | null | undefined {
   if (!value) return null;
   if (
@@ -51,9 +74,10 @@ function safeFolderId(value: string | null): string | null | undefined {
   return value;
 }
 
-function readFolders(payload: ZeroListResponse<ZeroFolder>): ZeroFolder[] {
-  if (!Array.isArray(payload.folders)) return [];
-  return (payload.folders as unknown[]).flatMap((entry) => {
+function readFolders(payload: ZeroListResponse<ZeroFolder>): ZeroFolder[] | null {
+  const entries = listFromPayload(payload, "folders");
+  if (!entries) return null;
+  return entries.flatMap((entry) => {
     if (!entry || typeof entry !== "object") return [];
     const folder = entry as Record<string, unknown>;
     if (typeof folder.id !== "string" || typeof folder.name !== "string") return [];
@@ -65,9 +89,10 @@ function readFolders(payload: ZeroListResponse<ZeroFolder>): ZeroFolder[] {
   });
 }
 
-function readFiles(payload: ZeroListResponse<ZeroFile>): ZeroFile[] {
-  if (!Array.isArray(payload.files)) return [];
-  return (payload.files as unknown[]).flatMap((entry) => {
+function readFiles(payload: ZeroListResponse<ZeroFile>): ZeroFile[] | null {
+  const entries = listFromPayload(payload, "files");
+  if (!entries) return null;
+  return entries.flatMap((entry) => {
     if (!entry || typeof entry !== "object") return [];
     const file = entry as Record<string, unknown>;
     if (typeof file.id !== "string" || typeof file.name !== "string") return [];
@@ -181,14 +206,25 @@ export default async function handler(request: Request): Promise<Response> {
     }
 
     const payload = await upstreamResponse.json() as ZeroListResponse<ZeroFolder | ZeroFile>;
+    const items = resource === "folders"
+      ? readFolders(payload as ZeroListResponse<ZeroFolder>)
+      : readFiles(payload as ZeroListResponse<ZeroFile>);
+    if (!items) {
+      console.error("ZeroStorage returned an unsupported list response:", {
+        resource,
+        responseKeys: Object.keys(payload),
+        userId: authorization.userId,
+      });
+      return json(502, { error: "ZeroStorage returned an unexpected folder listing. Check the connection and try again." });
+    }
     const common = {
-      total: typeof payload.total === "number" ? payload.total : 0,
-      page: typeof payload.page === "number" ? payload.page : page,
-      limit: typeof payload.limit === "number" ? payload.limit : limit,
+      total: numberFromPayload(payload, "total") ?? items.length,
+      page: numberFromPayload(payload, "page") ?? page,
+      limit: numberFromPayload(payload, "limit") ?? limit,
     };
     return resource === "folders"
-      ? json(200, { ...common, folders: readFolders(payload as ZeroListResponse<ZeroFolder>) })
-      : json(200, { ...common, files: readFiles(payload as ZeroListResponse<ZeroFile>) });
+      ? json(200, { ...common, folders: items })
+      : json(200, { ...common, files: items });
   } catch (error) {
     console.error("ZeroStorage list request errored:", {
       message: error instanceof Error ? error.message : "unknown error",

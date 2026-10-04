@@ -43,7 +43,7 @@ export interface AdminPostsState {
 }
 
 export interface ZeroStorageBrowserState {
-  mode: "profile" | "gallery" | "video";
+  mode: "profile" | "gallery" | "video" | "post";
   breadcrumbs: Array<{ id: string; name: string }>;
   folders: Array<{ id: string; name: string; fileCount?: number }>;
   files: Array<{ id: string; name: string; size?: number; type: "image" | "video" | "unknown"; compatible?: boolean }>;
@@ -129,7 +129,7 @@ export function renderAdminIndex(state: AdminIndexState = {}): string {
         <span class="admin-overview-note">${fmtCount(state.unpublishedPosts)} not published</span>
       </a>
       <section class="admin-import-callout">
-        <div><span class="admin-kicker">ZeroStorage</span><h2>Bring new media into the catalog.</h2><p>Browse the locked 0RMCOIN root, select files, then review captions and styles before importing.</p></div>
+        <div><span class="admin-kicker">ZeroStorage</span><h2>Bring new media into the catalog.</h2><p>Browse from the storage root, select files, then review captions and styles before importing.</p></div>
         <a class="btn btn-gold" href="/admin/import">Open import desk <span aria-hidden="true">→</span></a>
       </section>
     </section>`;
@@ -186,7 +186,7 @@ export function renderAdminPosts(state: AdminPostsState): string {
 
 export function renderAdminImport(state: AdminImportState): string {
   const content = `<section class="admin-section admin-import-intro">
-      <div class="admin-import-lockup"><span class="admin-kicker">Connected source</span><strong>0RMCOIN <span>ROOT LOCKED</span></strong><p>Browse files without changing their location or source.</p></div>
+      <div class="admin-import-lockup"><span class="admin-kicker">Connected source</span><strong>ZeroStorage <span>STORAGE ROOT</span></strong><p>Browse from the storage root without changing files or their locations.</p></div>
       <div class="admin-import-process" aria-label="Import process"><span class="is-current"><b>01</b> Choose media</span><i aria-hidden="true"></i><span><b>02</b> Review details</span><i aria-hidden="true"></i><span><b>03</b> Import</span></div>
       <section class="import-model-choice" aria-labelledby="import-model-title">
         <div><span class="admin-kicker">Catalog destination</span><h2 id="import-model-title">Choose a creator</h2><p>Every imported image or video becomes an individual post for this creator.</p></div>
@@ -231,11 +231,16 @@ function humanSize(size: number | undefined): string {
 
 export function renderZeroStorageBrowser(state: ZeroStorageBrowserState): string {
   const isCompatible = (file: ZeroStorageBrowserState["files"][number]) =>
-    file.compatible ?? (state.mode === "video" ? file.type === "video" : file.type === "image");
+    file.compatible ?? (state.mode === "video"
+      ? file.type === "video"
+      : state.mode === "post"
+        ? file.type === "image" || file.type === "video"
+        : file.type === "image");
   const selectableFiles = state.files.filter(isCompatible);
-  const modeName = state.mode === "profile" ? "Profile image" : state.mode === "gallery" ? "Gallery" : "Video";
+  const modeName = state.mode === "profile" ? "Profile image" : state.mode === "gallery" ? "Gallery" : state.mode === "video" ? "Video" : "Post media";
+  const compatibleTypes = state.mode === "video" ? "video files" : state.mode === "post" ? "images or videos" : "images";
   const selectedCount = state.selectedFileIds.length + (state.mode === "gallery" ? state.selectedFolderIds.length : 0);
-  const crumbs = `<button type="button" class="zsb-crumb ${state.breadcrumbs.length ? "" : "is-current"}" data-action="zsb-breadcrumb" data-index="0" ${state.breadcrumbs.length ? "" : 'aria-current="page"'}>0RMCOIN</button>${state.breadcrumbs.map((crumb, index) =>
+  const crumbs = `<button type="button" class="zsb-crumb ${state.breadcrumbs.length ? "" : "is-current"}" data-action="zsb-breadcrumb" data-index="0" ${state.breadcrumbs.length ? "" : 'aria-current="page"'}>Storage root</button>${state.breadcrumbs.map((crumb, index) =>
     `<span class="zsb-crumb-separator" aria-hidden="true">/</span><button type="button" class="zsb-crumb ${index === state.breadcrumbs.length - 1 ? "is-current" : ""}" data-action="zsb-breadcrumb" data-index="${index + 1}" ${index === state.breadcrumbs.length - 1 ? 'aria-current="page"' : ""}>${esc(crumb.name)}</button>`,
   ).join("")}`;
   let results: string;
@@ -267,7 +272,7 @@ export function renderZeroStorageBrowser(state: ZeroStorageBrowserState): string
     if (!folderMarkup && !filesMarkup) {
       results = `<div class="zsb-state zsb-empty" role="status"><span class="zsb-state-symbol" aria-hidden="true">—</span><strong>This folder is empty</strong><p>No folders or files are available at this location.</p></div>`;
     } else if (!selectableFiles.length && !state.folders.length) {
-      results = `<div class="zsb-state zsb-empty" role="status"><span class="zsb-state-symbol" aria-hidden="true">!</span><strong>No compatible ${state.mode === "video" ? "video files" : "images"}</strong><p>This location has files, but none can be selected for ${modeName.toLowerCase()}.</p></div><div class="zsb-entry-list">${filesMarkup}</div>`;
+      results = `<div class="zsb-state zsb-empty" role="status"><span class="zsb-state-symbol" aria-hidden="true">!</span><strong>No compatible ${compatibleTypes}</strong><p>This location has files, but none can be selected for ${modeName.toLowerCase()}.</p></div><div class="zsb-entry-list">${filesMarkup}</div>`;
     } else {
       results = `${state.mode === "gallery" && state.folders.length ? `<div class="zsb-list-section"><span>Folders</span><small>Open or include in gallery</small></div>` : ""}
         ${folderMarkup ? `<div class="zsb-entry-list">${folderMarkup}</div>` : ""}
@@ -286,12 +291,12 @@ export function renderZeroStorageBrowser(state: ZeroStorageBrowserState): string
       <div class="zsb-location">
         <button type="button" class="zsb-back" data-action="zsb-back" ${state.breadcrumbs.length ? "" : "disabled"} aria-label="Go back one folder">← <span>Back</span></button>
         <nav class="zsb-breadcrumbs" aria-label="ZeroStorage location">${crumbs}</nav>
-        <span class="zsb-root-lock" aria-label="Root folder locked"><span aria-hidden="true">▣</span> ROOT LOCKED</span>
+        <span class="zsb-root-label">STORAGE ROOT</span>
       </div>
       <div class="zsb-browser-toolbar">
         <span class="zsb-selection-count" aria-live="polite"><strong>${selectedCount}</strong> selected</span>
         ${state.mode === "gallery" ? `<button type="button" class="zsb-select-all" data-action="zsb-select-all" aria-label="${selectableFiles.every((file) => state.selectedFileIds.includes(file.id)) ? "Deselect all compatible files" : "Select all compatible files"}" ${selectableFiles.length ? "" : "disabled"}>Select all ${selectableFiles.length ? `(${selectableFiles.length})` : ""}</button>` : ""}
-        <span class="zsb-type-note">${state.mode === "video" ? "Video files only" : "Image files only"}</span>
+        <span class="zsb-type-note">${state.mode === "video" ? "Video files only" : state.mode === "post" ? "One image or video" : "Image files only"}</span>
       </div>
       <div class="zsb-content" aria-live="polite">${results}</div>
       <footer class="zsb-footer">

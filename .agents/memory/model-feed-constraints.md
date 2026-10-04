@@ -9,7 +9,8 @@ For this project:
 - Keep CSV import out of this version.
 - Never expose the ZeroStorage API key or Supabase service-role key to the browser.
 - The user says the Netlify `ZEROSTORAGE_API_KEY` is already configured; do not ask them for it.
+- The ZeroStorage browser may start at the storage root; do not require a `0RMCOIN` folder.
 
-**Why:** The user stated these as hard project requirements and confirmed the ZeroStorage key is already configured.
+**Why:** The user stated these as hard project requirements, confirmed the ZeroStorage key is already configured, and allowed browsing from the storage root when `0RMCOIN` was not found.
 
-**How to apply:** Preserve these boundaries when extending the Model Feed app. Keep privileged credentials server-side, use the existing Supabase/Netlify architecture, and do not request the ZeroStorage key.
+**How to apply:** Preserve these boundaries when extending the Model Feed app. Keep privileged credentials server-side, use the existing Supabase/Netlify architecture, do not request the ZeroStorage key, and do not assume a named folder exists at the storage root.

@@ -269,8 +269,7 @@ h1 { font-size: clamp(32px, 8vw, 48px); line-height: 1.07; margin-bottom: 10px; 
 .zsb-crumb { flex: none; padding: 4px 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 10px; white-space: nowrap; }
 .zsb-crumb:hover, .zsb-crumb.is-current { color: var(--gold-light); }
 .zsb-crumb-separator { color: var(--quiet); font-size: 10px; }
-.zsb-root-lock { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: #aea789; font-size: 8px; letter-spacing: .1em; white-space: nowrap; }
-.zsb-root-lock span { font-size: 11px; }
+.zsb-root-label { margin-left: auto; color: #aea789; font-size: 8px; letter-spacing: .1em; white-space: nowrap; }
 .zsb-browser-toolbar { min-height: 46px; display: flex; align-items: center; gap: 17px; padding: 0 25px; border-bottom: 1px solid var(--line-soft); }
 .zsb-selection-count { color: var(--muted); font-size: 10px; }
 .zsb-selection-count strong { color: var(--text); font-variant-numeric: tabular-nums; }
@@ -437,7 +436,7 @@ h1 { font-size: clamp(32px, 8vw, 48px); line-height: 1.07; margin-bottom: 10px; 
   .zsb-header { padding: max(15px,env(safe-area-inset-top)) 16px 13px; }
   .zsb-heading h2 { font-size: 22px; }
   .zsb-location { min-height: 48px; gap: 10px; padding: 0 16px; }
-  .zsb-root-lock { font-size: 7px; }
+  .zsb-root-label { font-size: 7px; }
   .zsb-browser-toolbar { padding: 0 16px; gap: 11px; }
   .zsb-content { padding: 6px 12px 12px; }
   .zsb-footer { align-items: stretch; flex-direction: column; gap: 9px; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); }

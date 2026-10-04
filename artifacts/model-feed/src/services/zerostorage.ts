@@ -110,19 +110,6 @@ export async function listAllFiles(folderId?: string): Promise<ZeroFile[]> {
   return listAllPages((page) => listFiles(folderId, page));
 }
 
-export async function findApplicationRootFolder(): Promise<ZeroFolder> {
-  const matches = (await listAllFolders()).filter(
-    (folder) => folder.name.trim().toLowerCase() === ZERO_STORAGE_APP_ROOT_NAME.toLowerCase(),
-  );
-  if (matches.length === 0) {
-    throw new Error(`The ZeroStorage folder ${ZERO_STORAGE_APP_ROOT_NAME} was not found at the storage root.`);
-  }
-  if (matches.length > 1) {
-    throw new Error(`More than one ${ZERO_STORAGE_APP_ROOT_NAME} folder exists at the storage root.`);
-  }
-  return matches[0];
-}
-
 export interface ZeroStorageSelectedFolder extends ZeroFolder {
   sourcePath: string;
 }
@@ -219,7 +206,8 @@ export async function revalidateZeroStorageFiles(
 export function sourceForPath(path: string): ContentSource | null {
   const segments = path.split("/").map((part) => part.trim()).filter(Boolean);
   const appRootIndex = segments.findIndex((part) => part.toLowerCase() === ZERO_STORAGE_APP_ROOT_NAME.toLowerCase());
-  const source = (segments[appRootIndex >= 0 ? appRootIndex + 1 : 0] ?? "").toLowerCase();
+  const candidates = appRootIndex >= 0 ? segments.slice(appRootIndex + 1) : segments;
+  const source = candidates.find((part) => ["ctele", "eb", "wt"].includes(part.toLowerCase()))?.toLowerCase();
   if (source === "ctele") return "ctele";
   if (source === "eb") return "eb";
   if (source === "wt") return "wt";

@@ -16,7 +16,7 @@ The app is a Vanilla TypeScript + Vite frontend backed by Supabase. The ZeroStor
 - Preserve the existing Vanilla TypeScript, Vite, Supabase, and Netlify Functions architecture; do not migrate it to another stack.
 - ZeroStorage remains the only media store. Keep its privileged API key server-side in the Netlify Function; never expose it to browser code.
 - Use ZeroStorage file IDs as canonical media identity and derive image/video display URLs from `src/lib/zerostorage-urls.ts`.
-- The admin browser is locked to `0RMCOIN/`. Import requires an explicit creator selection; folder names never select or infer a creator.
+- The admin browser starts at the ZeroStorage storage root and may browse available folders. Import requires an explicit creator selection; folder names never select or infer a creator.
 - Gallery folders group review controls, not posts: every imported image and video creates its own post. Do not add CSV import or delete ZeroStorage files.
 - Preserve the dark premium styling and existing product behavior. Manual model profile-image URLs remain supported alongside ZeroStorage profile images.
 

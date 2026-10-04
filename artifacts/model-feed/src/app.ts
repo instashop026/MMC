@@ -15,7 +15,7 @@ import {
   listStyles, getStyleDetail, createStyle, updateStyle, deleteStyle, findOrCreateStyle, normalizeStyleSlug,
 } from './services/styles';
 import {
-  collectMediaUnderFolder, findApplicationRootFolder, listFiles, listFolders,
+  collectMediaUnderFolder, listFiles, listFolders,
   revalidateZeroStorageFiles, sourceForPath,
 } from './services/zerostorage';
 import type {
@@ -33,11 +33,11 @@ import type { ContentSource, MediaType } from './types/models';
 
 type AnyRecord = Record<string, any>;
 type Route = { path: string; segments: string[]; query: URLSearchParams };
-type ImportMode = 'profile' | 'gallery' | 'video';
+type ImportMode = 'profile' | 'gallery' | 'video' | 'post';
 
 interface StorageBrowserSession {
   mode: ImportMode;
-  purpose: 'profile' | 'bulk';
+  purpose: 'profile' | 'bulk' | 'post';
   rootFolder: ZeroFolder;
   stack: ZeroFolder[];
   folders: ZeroFolder[];
@@ -352,9 +352,36 @@ function modalMarkup(): string {
       return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="modal-head"><h2 id="dialog-title">${d.edit?'Edit model':'New model'}</h2><button class="icon-button" data-action="close-modal" aria-label="Close">${icon('close')}</button></div><form data-form="model"><input type="hidden" name="id" value="${esc(idOf(m))}"><div class="field"><label for="m-name">Display name</label><input id="m-name" name="name" required value="${esc(str(m,'display_name','displayName','name'))}"></div><div class="field"><label for="m-username">Username (optional)</label><input id="m-username" name="username" value="${esc(str(m,'username'))}"></div><div class="field"><label for="m-slug">Slug</label><input id="m-slug" name="slug" required value="${esc(str(m,'slug'))}"></div><div class="field"><label for="m-bio">Bio</label><textarea id="m-bio" name="bio">${esc(str(m,'bio','description'))}</textarea></div><div class="field"><label for="m-cover">Profile image URL</label><input id="m-cover" name="imageUrl" type="url" value="${esc(str(m,'profile_image_url','profileImageUrl'))}"><input type="hidden" name="profileFileId" value="${esc(profileFileId)}"><button type="button" class="btn btn-outline btn-small" data-action="profile-image-select">Choose a single image from ZeroStorage</button>${profilePreview ? `<img class="profile-image-preview" src="${esc(profilePreview)}" alt="Profile image preview">` : ''}${profileFileId ? `<small class="muted profile-storage-file-id">ZeroStorage file ID: ${esc(profileFileId)}</small>` : ''}</div><div class="field"><label><input type="checkbox" name="published" ${bool(m,'published','is_published','isPublished')?'checked':''}> Published</label></div><div class="field"><label>Styles</label><div class="chips">${state.styles.map((st:AnyRecord)=>`<label class="chip"><input type="checkbox" name="styleIds" value="${esc(idOf(st))}" ${((Array.isArray(m.styles)&&m.styles.some((x:AnyRecord)=>idOf(x)===idOf(st)))||(Array.isArray(m.style_ids)&&m.style_ids.includes(idOf(st)))||(Array.isArray(m.styleIds)&&m.styleIds.includes(idOf(st))))?'checked':''}> ${esc(str(st,'name','title'))}</label>`).join('') || '<span class="muted small">Add styles first to attach them to a model.</span>'}</div></div><button class="btn btn-gold btn-block" type="submit">${d.edit?'Save changes':'Create model'}</button></form></section></div>`;
   }
   if (state.modal === 'post-form') {
-    const p = d.post || {};
+    const savedPost = d.post || {};
+    const draft = d.draft || {};
+    const p = {
+      ...savedPost,
+      model_id: draft.modelId ?? str(savedPost, 'model_id', 'modelId'),
+      caption: draft.caption ?? postCaption(savedPost),
+      zerostorage_file_id: draft.fileId ?? str(savedPost, 'zerostorage_file_id', 'zerostorageFileId'),
+      filename: draft.filename ?? str(savedPost, 'filename'),
+      source: draft.source ?? str(savedPost, 'source'),
+      source_path: draft.sourcePath ?? str(savedPost, 'source_path', 'sourcePath'),
+      style_ids: draft.styleIds ?? savedPost.style_ids ?? [],
+      published: draft.published ?? bool(savedPost, 'published', 'is_published', 'isPublished'),
+    };
     const models = d.models || [];
-      return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="modal-head"><h2 id="dialog-title">${d.edit?'Edit post':'New post'}</h2><button class="icon-button" data-action="close-modal" aria-label="Close">${icon('close')}</button></div><form data-form="post"><input type="hidden" name="id" value="${esc(idOf(p))}"><div class="field"><label for="p-model">Model</label><select id="p-model" name="modelId" required><option value="">Choose a model</option>${models.map((m:AnyRecord)=>`<option value="${esc(idOf(m))}" ${(str(p,'model_id','modelId')===idOf(m)||idOf(p.model)===idOf(m))?'selected':''}>${esc(modelName(m))}</option>`).join('')}</select></div><div class="field"><label for="p-caption">Caption</label><textarea id="p-caption" name="caption">${esc(postCaption(p))}</textarea></div><div class="field"><label for="p-file-id">ZeroStorage file ID</label><input id="p-file-id" name="fileId" maxlength="255" value="${esc(str(p,'zerostorage_file_id','zerostorageFileId'))}" required></div><div class="field"><label for="p-filename">Filename</label><input id="p-filename" name="filename" maxlength="255" value="${esc(str(p,'filename'))}"></div><div class="field"><label for="p-source">Content source</label><select id="p-source" name="source" required><option value="">Choose a source</option><option value="ctele" ${str(p,'source')==='ctele'?'selected':''}>CTele · images only</option><option value="eb" ${str(p,'source')==='eb'?'selected':''}>EB · images only</option><option value="wt" ${str(p,'source')==='wt'?'selected':''}>WT · videos only</option></select></div><p class="muted small">Media type follows the source: CTele and EB files are images; WT files are videos.</p><div class="field"><label for="p-source-path">Folder path (optional)</label><input id="p-source-path" name="sourcePath" maxlength="1000" value="${esc(str(p,'source_path','sourcePath'))}"></div><div class="field"><label>Styles</label><div class="chips">${state.styles.map((st:AnyRecord)=>`<label class="chip"><input type="checkbox" name="styleIds" value="${esc(idOf(st))}" ${((Array.isArray(p.styles)&&p.styles.some((x:AnyRecord)=>idOf(x)===idOf(st)))||(Array.isArray(p.style_ids)&&p.style_ids.includes(idOf(st))))?'checked':''}> ${esc(str(st,'name'))}</label>`).join('') || '<span class="muted small">No styles have been added yet.</span>'}</div></div><div class="field"><label><input type="checkbox" name="published" ${bool(p,'published','is_published','isPublished')?'checked':''}> Published</label></div><button class="btn btn-gold btn-block" type="submit">${d.edit?'Save changes':'Create post'}</button></form></section></div>`;
+    return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+      <div class="modal-head"><h2 id="dialog-title">${d.edit ? 'Edit post' : 'New post'}</h2><button class="icon-button" data-action="close-modal" aria-label="Close">${icon('close')}</button></div>
+      <form data-form="post">
+        <input type="hidden" name="id" value="${esc(idOf(p))}">
+        <div class="field"><label for="p-model">Model</label><select id="p-model" name="modelId" required><option value="">Choose a model</option>${models.map((m: AnyRecord) => `<option value="${esc(idOf(m))}" ${str(p, 'model_id', 'modelId') === idOf(m) || idOf(p.model) === idOf(m) ? 'selected' : ''}>${esc(modelName(m))}</option>`).join('')}</select></div>
+        <div class="field"><label for="p-caption">Caption</label><textarea id="p-caption" name="caption">${esc(postCaption(p))}</textarea></div>
+        <div class="field"><label for="p-file-id">ZeroStorage file ID</label><input id="p-file-id" name="fileId" maxlength="255" value="${esc(str(p, 'zerostorage_file_id', 'zerostorageFileId'))}" required><button type="button" class="btn btn-outline btn-small" data-action="post-media-select">Choose media from ZeroStorage</button></div>
+        <div class="field"><label for="p-filename">Filename</label><input id="p-filename" name="filename" maxlength="255" value="${esc(str(p, 'filename'))}"></div>
+        <div class="field"><label for="p-source">Content source</label><select id="p-source" name="source" required><option value="">Choose a source</option><option value="ctele" ${str(p, 'source') === 'ctele' ? 'selected' : ''}>CTele · images only</option><option value="eb" ${str(p, 'source') === 'eb' ? 'selected' : ''}>EB · images only</option><option value="wt" ${str(p, 'source') === 'wt' ? 'selected' : ''}>WT · videos only</option></select></div>
+        <p class="muted small">Media type follows the source: CTele and EB files are images; WT files are videos.</p>
+        <div class="field"><label for="p-source-path">Folder path (optional)</label><input id="p-source-path" name="sourcePath" maxlength="1000" value="${esc(str(p, 'source_path', 'sourcePath'))}"></div>
+        <div class="field"><label>Styles</label><div class="chips">${state.styles.map((st: AnyRecord) => `<label class="chip"><input type="checkbox" name="styleIds" value="${esc(idOf(st))}" ${((Array.isArray(p.styles) && p.styles.some((x: AnyRecord) => idOf(x) === idOf(st))) || (Array.isArray(p.style_ids) && p.style_ids.includes(idOf(st)))) ? 'checked' : ''}> ${esc(str(st, 'name'))}</label>`).join('') || '<span class="muted small">No styles have been added yet.</span>'}</div></div>
+        <div class="field"><label><input type="checkbox" name="published" ${bool(p, 'published', 'is_published', 'isPublished') ? 'checked' : ''}> Published</label></div>
+        <button class="btn btn-gold btn-block" type="submit">${d.edit ? 'Save changes' : 'Create post'}</button>
+      </form>
+    </section></div>`;
   }
   if (state.modal === 'confirm-delete') return `<div class="modal-backdrop"><section class="modal" role="alertdialog" aria-modal="true"><div class="modal-head"><h2>Remove this post?</h2><button class="icon-button" data-action="close-modal" aria-label="Close">${icon('close')}</button></div><p class="muted">The post and its comments, Likes, MMCs and style links will be deleted. The original file remains in ZeroStorage.</p><div class="row"><button class="btn btn-danger" data-action="confirm-post-delete" data-id="${esc(d.id)}">Delete post</button><button class="btn" data-action="close-modal">Cancel</button></div></section></div>`;
   if (state.modal === 'confirm-model-delete') return `<div class="modal-backdrop"><section class="modal" role="alertdialog" aria-modal="true" aria-labelledby="dialog-title"><div class="modal-head"><h2 id="dialog-title">Delete ${esc(d.name||'this model')}?</h2><button class="icon-button" data-action="close-modal" aria-label="Close">${icon('close')}</button></div><p class="muted">This permanently deletes the model, linked posts, comments, Likes, MMCs, follows and style links. The original files remain in ZeroStorage.</p><div class="row"><button class="btn btn-danger" data-action="confirm-model-delete" data-id="${esc(d.id)}">Delete model and posts</button><button class="btn" data-action="close-modal">Cancel</button></div></section></div>`;
@@ -367,15 +394,19 @@ function adminOverlayMarkup(): string {
   }
   const browser = state.storageBrowser;
   if (!browser) return '';
-  const sourcePath = ['0RMCOIN', ...browser.stack.map((folder) => folder.name)].join('/');
+  const sourcePath = currentStoragePath(browser);
   const source = sourceForPath(sourcePath);
   const files = browser.files.map((file) => ({
     ...file,
     compatible: browser.mode === 'profile'
       ? file.type === 'image'
-      : browser.mode === 'gallery'
-        ? file.type === 'image' && (source === 'ctele' || source === 'eb')
-        : file.type === 'video' && source === 'wt',
+      : browser.mode === 'post'
+        ? file.type === 'image'
+          ? source === null || source === 'ctele' || source === 'eb'
+          : file.type === 'video' && (source === null || source === 'wt')
+        : browser.mode === 'gallery'
+          ? file.type === 'image' && (source === 'ctele' || source === 'eb')
+          : file.type === 'video' && source === 'wt',
   }));
   const view: ZeroStorageBrowserState = {
     mode: browser.mode,
@@ -481,7 +512,7 @@ function currentStorageFolder(browser: StorageBrowserSession): ZeroFolder {
 }
 
 function currentStoragePath(browser: StorageBrowserSession): string {
-  return [browser.rootFolder.name || '0RMCOIN', ...browser.stack.map((folder) => folder.name)].join('/');
+  return browser.stack.map((folder) => folder.name).join('/');
 }
 
 async function loadStorageBrowser(browser: StorageBrowserSession): Promise<void> {
@@ -511,12 +542,13 @@ async function loadStorageBrowser(browser: StorageBrowserSession): Promise<void>
   }
 }
 
-async function openStorageBrowser(mode: ImportMode, purpose: 'profile' | 'bulk'): Promise<void> {
+async function openStorageBrowser(mode: ImportMode, purpose: 'profile' | 'bulk' | 'post'): Promise<void> {
   if (purpose === 'profile') captureModelFormDraft();
+  if (purpose === 'post') capturePostFormDraft();
   const browser: StorageBrowserSession = {
     mode,
     purpose,
-    rootFolder: { id: '', name: '0RMCOIN' },
+    rootFolder: { id: '', name: 'Storage root' },
     stack: [],
     folders: [],
     files: [],
@@ -530,16 +562,7 @@ async function openStorageBrowser(mode: ImportMode, purpose: 'profile' | 'bulk')
   };
   state.storageBrowser = browser;
   state.importReview = null;
-  await render();
-  try {
-    browser.rootFolder = await findApplicationRootFolder();
-    if (state.storageBrowser === browser) await loadStorageBrowser(browser);
-  } catch (err) {
-    if (state.storageBrowser !== browser) return;
-    browser.loading = false;
-    browser.error = userError(err);
-    await render();
-  }
+  await loadStorageBrowser(browser);
 }
 
 function captureModelFormDraft(): void {
@@ -555,6 +578,22 @@ function captureModelFormDraft(): void {
     profileFileId: String(values.get('profileFileId') ?? ''),
     published: values.has('published'),
     styleIds: values.getAll('styleIds').map(String),
+  };
+}
+
+function capturePostFormDraft(): void {
+  const form = root!.querySelector<HTMLFormElement>('form[data-form="post"]');
+  if (!form) return;
+  const values = new FormData(form);
+  state.modalData.draft = {
+    modelId: String(values.get('modelId') ?? ''),
+    caption: String(values.get('caption') ?? ''),
+    fileId: String(values.get('fileId') ?? ''),
+    filename: String(values.get('filename') ?? ''),
+    source: String(values.get('source') ?? ''),
+    sourcePath: String(values.get('sourcePath') ?? ''),
+    styleIds: values.getAll('styleIds').map(String),
+    published: values.has('published'),
   };
 }
 
@@ -604,6 +643,27 @@ async function prepareStorageReview(): Promise<void> {
       publishing: false,
       progressText: 'Image is ready to assign.',
     };
+    await render();
+    return;
+  }
+
+  if (browser.purpose === 'post') {
+    if (browser.mode !== 'post' || browser.selectedFiles.length !== 1) {
+      throw new Error('Choose exactly one image or video for the post.');
+    }
+    const validation = await revalidateZeroStorageFiles(browser.selectedFiles);
+    if (validation.missing.length) throw new Error('That media file is no longer available in ZeroStorage. Choose another file.');
+    const file = validation.available[0];
+    const draft = state.modalData.draft ?? {};
+    state.modalData.draft = {
+      ...draft,
+      fileId: file.id,
+      filename: file.name,
+      source: file.source ?? draft.source ?? '',
+      sourcePath: file.sourcePath,
+    };
+    state.storageBrowser = null;
+    toast(`Selected ${file.name}.`);
     await render();
     return;
   }
@@ -727,6 +787,11 @@ async function prepareStorageReview(): Promise<void> {
 function fileIsSelectable(browser: StorageBrowserSession, file: ZeroFile): boolean {
   if (browser.mode === 'profile') return file.type === 'image';
   const source = sourceForPath(currentStoragePath(browser));
+  if (browser.mode === 'post') {
+    return file.type === 'image'
+      ? source === null || source === 'ctele' || source === 'eb'
+      : file.type === 'video' && (source === null || source === 'wt');
+  }
   if (browser.mode === 'gallery') return file.type === 'image' && (source === 'ctele' || source === 'eb');
   return file.type === 'video' && source === 'wt';
 }
@@ -932,6 +997,10 @@ async function handleAction(button: HTMLElement): Promise<void> {
         if (!isAdmin()) throw new Error('Administrator access is required.');
         await openStorageBrowser('profile', 'profile');
         break;
+      case 'post-media-select':
+        if (!isAdmin()) throw new Error('Administrator access is required.');
+        await openStorageBrowser('post', 'post');
+        break;
       case 'zsb-mode': {
         const mode = button.dataset.mode;
         if (mode !== 'gallery' && mode !== 'video') throw new Error('Choose a valid import type.');
@@ -970,7 +1039,7 @@ async function handleAction(button: HTMLElement): Promise<void> {
         const file = browser.files.find((item) => item.id === id);
         if (!file || !fileIsSelectable(browser, file)) throw new Error('That file is not compatible with this import.');
         const selected = browser.selectedFiles.findIndex((item) => item.id === id);
-        if (browser.mode === 'profile') {
+        if (browser.mode === 'profile' || browser.mode === 'post') {
           browser.selectedFiles = [browserFile(browser, file)];
         } else if (selected >= 0) {
           browser.selectedFiles.splice(selected, 1);

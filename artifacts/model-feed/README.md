@@ -60,7 +60,7 @@ After setting environment variables, trigger a fresh deploy so the browser build
 
 - Each linked ZeroStorage file creates one post. The ZeroStorage file ID is the canonical unique media identity; the media URL is derived for display.
 - CTele and EB posts are images. WT posts are videos.
-- Admins can browse only within `0RMCOIN/` from `/admin/import`; folders outside that root are never exposed by the browser.
+- Admin browsing starts at the ZeroStorage storage root and shows folders available to the signed-in admin; no `0RMCOIN/` folder is required.
 - Select a creator explicitly before importing. Gallery folders organize the review only; each selected image creates its own post. Videos create one post each and use filename `#tags` as styles.
 - Review captions and styles, create missing styles inline, skip already-imported ZeroStorage file IDs, and revalidate selected files before publishing.
 - No CSV import is supported. ZeroStorage media is never copied into another storage system or deleted by this app.
