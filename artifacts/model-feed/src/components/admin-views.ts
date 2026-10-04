@@ -46,13 +46,18 @@ export interface ZeroStorageBrowserState {
   mode: "profile" | "gallery" | "video";
   breadcrumbs: Array<{ id: string; name: string }>;
   folders: Array<{ id: string; name: string; fileCount?: number }>;
-  files: Array<{ id: string; name: string; size?: number; type: "image" | "video" | "unknown" }>;
+  files: Array<{ id: string; name: string; size?: number; type: "image" | "video" | "unknown"; compatible?: boolean }>;
   selectedFileIds: string[];
   selectedFolderIds: string[];
   loading: boolean;
   error?: string;
   page: number;
   totalPages: number;
+}
+
+export interface AdminImportState {
+  models: Array<{ id: string; name: string }>;
+  selectedModelId: string;
 }
 
 export interface ImportReviewGroup {
@@ -69,6 +74,7 @@ export interface ImportReviewVideo {
   caption: string;
   duplicate: boolean;
   styleIds: string[];
+  filenameTags?: string[];
 }
 
 export interface ImportReviewState {
@@ -106,7 +112,7 @@ function adminFrame(title: string, description: string, active: string, content:
       <span class="admin-secure"><span aria-hidden="true"></span> Admin access</span>
     </header>
     <nav class="admin-nav" aria-label="Admin sections">${links.map(([href, label]) =>
-      `<a href="${href}" class="admin-nav-link${active === href ? " is-active" : ""}" ${active === href ? 'aria-current="page"' : ""}>${esc(label)}${active === href ? '<span class="admin-nav-rule" aria-hidden="true"></span>' : ""}</a>`,
+      `<a href="${href}" data-go="${href}" class="admin-nav-link${active === href ? " is-active" : ""}" ${active === href ? 'aria-current="page"' : ""}>${esc(label)}${active === href ? '<span class="admin-nav-rule" aria-hidden="true"></span>' : ""}</a>`,
     ).join("")}</nav>
     ${content}
   </main>`;
@@ -178,23 +184,32 @@ export function renderAdminPosts(state: AdminPostsState): string {
   return adminFrame("Posts", "Review imported media and keep the catalog in order.", "/admin/posts", content);
 }
 
-export function renderAdminImport(): string {
+export function renderAdminImport(state: AdminImportState): string {
   const content = `<section class="admin-section admin-import-intro">
       <div class="admin-import-lockup"><span class="admin-kicker">Connected source</span><strong>0RMCOIN <span>ROOT LOCKED</span></strong><p>Browse files without changing their location or source.</p></div>
       <div class="admin-import-process" aria-label="Import process"><span class="is-current"><b>01</b> Choose media</span><i aria-hidden="true"></i><span><b>02</b> Review details</span><i aria-hidden="true"></i><span><b>03</b> Import</span></div>
-      ${renderImportModeChoice()}
+      <section class="import-model-choice" aria-labelledby="import-model-title">
+        <div><span class="admin-kicker">Catalog destination</span><h2 id="import-model-title">Choose a creator</h2><p>Every imported image or video becomes an individual post for this creator.</p></div>
+        <label class="sr-only" for="import-model">Creator</label>
+        <select id="import-model" class="filter-select" data-import-model aria-describedby="import-model-help">
+          <option value="">Choose a creator</option>
+          ${state.models.map((model) => `<option value="${esc(model.id)}" ${model.id === state.selectedModelId ? "selected" : ""}>${esc(model.name)}</option>`).join("")}
+        </select>
+        <small id="import-model-help">${state.models.length ? "The creator is selected explicitly; folder names are never used to guess." : "Create a creator profile before importing media."}</small>
+      </section>
+      ${renderImportModeChoice(Boolean(state.selectedModelId))}
     </section>`;
   return adminFrame("Import media", "Select source media, then review the details before creating posts.", "/admin/import", content);
 }
 
-export function renderImportModeChoice(): string {
+export function renderImportModeChoice(enabled = true): string {
   return `<section class="import-mode-choice" aria-labelledby="import-mode-title" data-testid="import-mode-choice">
-    <div class="import-mode-heading"><span class="admin-kicker">Start with a media type</span><h2 id="import-mode-title">What are you importing?</h2><p>Choose a workflow. Media stays in ZeroStorage; this links it to the creator catalog.</p></div>
+    <div class="import-mode-heading"><span class="admin-kicker">Start with a media type</span><h2 id="import-mode-title">What are you importing?</h2><p>${enabled ? "Choose a workflow. Media stays in ZeroStorage; this links it to the creator catalog." : "Choose a creator above to enable importing."}</p></div>
     <div class="import-mode-options">
-      <button type="button" class="import-mode-option" data-action="zsb-mode" data-mode="gallery" aria-label="Import a gallery of images and folders">
+      <button type="button" class="import-mode-option" data-action="zsb-mode" data-mode="gallery" aria-label="Import a gallery of images and folders" ${enabled ? "" : "disabled"}>
         <span class="import-mode-index">01 / IMAGE COLLECTION</span><strong>Gallery</strong><span>Select image files and folders together.</span><span class="import-mode-arrow" aria-hidden="true">→</span>
       </button>
-      <button type="button" class="import-mode-option" data-action="zsb-mode" data-mode="video" aria-label="Import video files">
+      <button type="button" class="import-mode-option" data-action="zsb-mode" data-mode="video" aria-label="Import video files" ${enabled ? "" : "disabled"}>
         <span class="import-mode-index">02 / VIDEO POST</span><strong>Video</strong><span>Select compatible video files for a creator.</span><span class="import-mode-arrow" aria-hidden="true">→</span>
       </button>
     </div>
@@ -215,9 +230,9 @@ function humanSize(size: number | undefined): string {
 }
 
 export function renderZeroStorageBrowser(state: ZeroStorageBrowserState): string {
-  const selectableFiles = state.files.filter((file) =>
-    state.mode === "video" ? file.type === "video" : file.type === "image",
-  );
+  const isCompatible = (file: ZeroStorageBrowserState["files"][number]) =>
+    file.compatible ?? (state.mode === "video" ? file.type === "video" : file.type === "image");
+  const selectableFiles = state.files.filter(isCompatible);
   const modeName = state.mode === "profile" ? "Profile image" : state.mode === "gallery" ? "Gallery" : "Video";
   const selectedCount = state.selectedFileIds.length + (state.mode === "gallery" ? state.selectedFolderIds.length : 0);
   const crumbs = `<button type="button" class="zsb-crumb ${state.breadcrumbs.length ? "" : "is-current"}" data-action="zsb-breadcrumb" data-index="0" ${state.breadcrumbs.length ? "" : 'aria-current="page"'}>0RMCOIN</button>${state.breadcrumbs.map((crumb, index) =>
@@ -239,7 +254,7 @@ export function renderZeroStorageBrowser(state: ZeroStorageBrowserState): string
       </div>`;
     }).join("");
     const filesMarkup = state.files.map((file) => {
-      const compatible = state.mode === "video" ? file.type === "video" : file.type === "image";
+      const compatible = isCompatible(file);
       const selected = state.selectedFileIds.includes(file.id);
       const disabled = !compatible;
       return `<div class="zsb-entry zsb-file-entry ${disabled ? "is-incompatible" : ""}">
@@ -315,11 +330,11 @@ export function renderImportReview(state: ImportReviewState): string {
   const galleryMarkup = state.groups.map((group) => `<section class="import-review-group" data-testid="import-review-group">
     <header class="import-review-group-head"><div><span class="admin-kicker">Gallery group</span><h3>${esc(group.name)}</h3></div><span class="import-group-count">${group.files.length} ${group.files.length === 1 ? "image" : "images"}</span></header>
     <div class="import-preview-strip" aria-label="Selected gallery files">${group.files.map((file) => `<div class="import-preview-item">${mediaBadge(file.type)}<span title="${esc(file.name)}">${esc(file.name)}</span>${file.duplicate ? duplicateNotice() : ""}</div>`).join("")}</div>
-    <div class="import-review-edit"><div class="field"><label for="caption-${esc(group.id)}">Gallery caption</label><textarea id="caption-${esc(group.id)}" name="caption" data-action="import-caption" data-group="${esc(group.id)}" maxlength="2000" placeholder="Add a caption for this gallery">${esc(group.caption)}</textarea><small>Applied to the gallery collection.</small></div>${renderStylePicker(state.styles, group.styleIds, group.id)}</div>
+    <div class="import-review-edit"><div class="field"><label for="caption-${esc(group.id)}">Gallery caption</label><textarea id="caption-${esc(group.id)}" name="caption" data-action="import-caption" data-group="${esc(group.id)}" maxlength="2000" placeholder="Add a caption for this gallery">${esc(group.caption)}</textarea><small>Applied to every image in this group.</small></div>${renderStylePicker(state.styles, group.styleIds, group.id)}</div>
   </section>`).join("");
   const videoMarkup = state.videos.map((video) => `<section class="import-review-video" data-testid="import-review-video">
     <div class="import-video-file">${mediaBadge("video")}<div><strong>${esc(video.name)}</strong><small>Video post</small></div>${video.duplicate ? duplicateNotice() : ""}</div>
-    <div class="import-review-edit"><div class="field"><label for="caption-${esc(video.id)}">Caption</label><textarea id="caption-${esc(video.id)}" name="caption" data-action="import-caption" data-group="${esc(video.id)}" maxlength="2000" placeholder="Add a caption">${esc(video.caption)}</textarea></div>${renderStylePicker(state.styles, video.styleIds, video.id)}</div>
+    <div class="import-review-edit"><div class="field"><label for="caption-${esc(video.id)}">Caption</label><textarea id="caption-${esc(video.id)}" name="caption" data-action="import-caption" data-group="${esc(video.id)}" maxlength="2000" placeholder="Add a caption">${esc(video.caption)}</textarea>${video.filenameTags?.length ? `<small class="import-tag-note">Filename tags will be added as styles: ${video.filenameTags.map((tag) => `#${esc(tag)}`).join(", ")}</small>` : ""}</div>${renderStylePicker(state.styles, video.styleIds, video.id)}</div>
   </section>`).join("");
   const isProfile = state.mode === "profile";
   const reviewBody = isProfile
@@ -327,10 +342,10 @@ export function renderImportReview(state: ImportReviewState): string {
     : `${galleryMarkup}${videoMarkup}`;
   const duplicateCount = state.groups.reduce((count, group) => count + group.files.filter((file) => file.duplicate).length, 0) + state.videos.filter((video) => video.duplicate).length;
   return `<section class="import-review" data-testid="import-review" aria-labelledby="import-review-title">
-    <header class="import-review-heading"><div><span class="admin-kicker">Step 02 · Review before linking</span><h2 id="import-review-title">Review import</h2><p>Confirm how these files will appear in the ${isProfile ? "creator profile" : "catalog"}.</p></div><button type="button" class="btn btn-outline" data-action="import-cancel">Back to browser</button></header>
+    <header class="import-review-heading"><div><span class="admin-kicker">Step 02 · Review before linking</span><h2 id="import-review-title">Review import</h2><p>Confirm how these files will appear in the ${isProfile ? "creator profile" : "catalog"}.</p></div><button type="button" class="btn btn-outline" data-action="import-back">Back to browser</button></header>
     <div class="import-review-summary"><span><small>Creator</small><strong>${esc(state.modelName || "No creator selected")}</strong></span><span><small>Items selected</small><strong>${fmtCount(total)}</strong></span><span><small>Mode</small><strong>${isProfile ? "Profile image" : state.mode === "gallery" ? "Gallery" : "Video"}</strong></span></div>
     ${duplicateCount ? `<div class="import-review-warning" role="status"><strong>${duplicateCount} possible duplicate${duplicateCount === 1 ? "" : "s"}</strong><span>These files are already linked to posts. Review before importing.</span></div>` : ""}
     <div class="import-review-items">${reviewBody || `<div class="admin-state admin-state-empty"><h3>No media selected</h3><p>Return to ZeroStorage and choose compatible files.</p></div>`}</div>
     <footer class="import-review-footer"><p class="import-progress" role="status" aria-live="polite">${esc(state.progressText || "Ready to import")}</p><div><button type="button" class="btn btn-outline" data-action="import-cancel" ${state.publishing ? "disabled" : ""}>Cancel</button><button type="button" class="btn btn-gold" data-action="import-publish" ${state.publishing || !total ? "disabled" : ""}>${state.publishing ? "Importing…" : isProfile ? "Set profile image" : `Import ${total} ${total === 1 ? "item" : "items"}`}</button></div></footer>
-  </section>`;
+    </section>`;
 }

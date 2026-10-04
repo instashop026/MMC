@@ -9,6 +9,14 @@ function escapeSearch(value: string): string {
   return value.replace(/[%_\\]/g, "\\$&").trim().slice(0, 100);
 }
 
+function normalizeProfileFileId(fileId: string | null | undefined): string | null {
+  const normalized = fileId?.trim() || null;
+  if (normalized && (normalized.length > 255 || /[/\\]/.test(normalized))) {
+    throw new Error("The ZeroStorage profile image ID is invalid.");
+  }
+  return normalized;
+}
+
 export async function listModels({
   search,
   limit = 24,
@@ -80,15 +88,16 @@ export async function getModelDetail(slug: string): Promise<ModelDetail | null> 
 }
 
 export async function createModel(input: ModelInput): Promise<Model> {
+  const profileFileId = normalizeProfileFileId(input.profile_image_zerostorage_file_id);
   const payload = {
     name: input.name.trim(),
     username: input.username?.trim() || null,
     slug: input.slug.trim(),
     description: input.description?.trim() || null,
-    profile_image_url: input.profile_image_zerostorage_file_id?.trim()
+    profile_image_url: profileFileId
       ? null
       : input.profile_image_url?.trim() || null,
-    profile_image_zerostorage_file_id: input.profile_image_zerostorage_file_id?.trim() || null,
+    profile_image_zerostorage_file_id: profileFileId,
     published: input.published,
   };
   const { data, error } = await getSupabase()
@@ -115,10 +124,7 @@ export async function updateModel(id: string, input: Partial<ModelInput>): Promi
     if (url) payload.profile_image_zerostorage_file_id = null;
   }
   if (input.profile_image_zerostorage_file_id !== undefined) {
-    const fileId = input.profile_image_zerostorage_file_id?.trim() || null;
-    if (fileId && (fileId.length > 255 || /[/\\]/.test(fileId))) {
-      throw new Error("The ZeroStorage profile image ID is invalid.");
-    }
+    const fileId = normalizeProfileFileId(input.profile_image_zerostorage_file_id);
     payload.profile_image_zerostorage_file_id = fileId;
     if (fileId) payload.profile_image_url = null;
   }

@@ -8,32 +8,68 @@ import {
   toggleFollow, getFollowedModelIds, toggleStyleFollow, getFollowedStyleIds, listFollowedStyles,
 } from './services/follows';
 import {
-  listPosts, getPost, createPost, updatePost, deletePost, listComments, createComment, deleteComment,
+  listPosts, getPost, createPost, updatePost, deletePost, listComments, createComment, deleteComment, findImportedFileIds,
 } from './services/posts';
 import { toggleLike, toggleMMC } from './services/interactions';
 import {
-  listStyles, getStyleDetail, createStyle, updateStyle, deleteStyle,
+  listStyles, getStyleDetail, createStyle, updateStyle, deleteStyle, findOrCreateStyle, normalizeStyleSlug,
 } from './services/styles';
-import { listFolders, listFiles } from './services/zerostorage';
-import { buildDownloadUrl } from './lib/zerostorage-urls';
-import { sourceForPath } from './services/zerostorage';
+import {
+  collectMediaUnderFolder, findApplicationRootFolder, listFiles, listFolders,
+  revalidateZeroStorageFiles, sourceForPath,
+} from './services/zerostorage';
+import type {
+  ZeroFile, ZeroFolder, ZeroStorageImportFile, ZeroStorageSelectedFolder,
+} from './services/zerostorage';
+import {
+  renderAdminImport, renderImportReview, renderZeroStorageBrowser,
+} from './components/admin-views';
+import type {
+  ImportReviewGroup, ImportReviewVideo, ImportReviewState, ZeroStorageBrowserState,
+} from './components/admin-views';
+import { buildImageEmbedUrl, buildVideoEmbedUrl } from './lib/zerostorage-urls';
+import { captionFromFilename, styleTagsFromFilename } from './lib/import-metadata';
 import type { ContentSource, MediaType } from './types/models';
 
 type AnyRecord = Record<string, any>;
 type Route = { path: string; segments: string[]; query: URLSearchParams };
+type ImportMode = 'profile' | 'gallery' | 'video';
+
+interface StorageBrowserSession {
+  mode: ImportMode;
+  purpose: 'profile' | 'bulk';
+  rootFolder: ZeroFolder;
+  stack: ZeroFolder[];
+  folders: ZeroFolder[];
+  files: ZeroFile[];
+  selectedFiles: ZeroStorageImportFile[];
+  selectedFolders: ZeroStorageSelectedFolder[];
+  page: number;
+  folderTotal: number;
+  fileTotal: number;
+  loading: boolean;
+  error?: string;
+  requestId: number;
+}
+
+interface ImportReviewDraft extends ImportReviewState {
+  modelId: string;
+  purpose: 'profile' | 'bulk';
+  groupFiles: Record<string, ZeroStorageImportFile[]>;
+  videoFiles: ZeroStorageImportFile[];
+  videoTags: Record<string, string[]>;
+}
 
 const state: {
   user: unknown; profile: unknown; route: Route; search: string; filterType: string; filterModel: string;
   followed: Set<string>; followedStyles: Set<string>; modal: string; modalData: AnyRecord;
-  error: string; toastTimer?: number; folderPath: string; folderId: string;
-  folderStack: Array<{ id: string; name: string }>; storagePage: number;
-  storageTotals: { folders: number; files: number };
-  selectedFile: AnyRecord | null; styles: AnyRecord[]; generation: number;
+  error: string; toastTimer?: number; styles: AnyRecord[]; generation: number;
+  importModelId: string; storageBrowser: StorageBrowserSession | null; importReview: ImportReviewDraft | null;
 } = {
   user: null, profile: null, route: parseRoute(), search: '', filterType: '', filterModel: '',
   followed: new Set(), followedStyles: new Set(), modal: '', modalData: {}, error: '',
-  folderPath: '', folderId: '', folderStack: [], storagePage: 1,
-  storageTotals: { folders: 0, files: 0 }, selectedFile: null, styles: [], generation: 0,
+  styles: [], generation: 0,
+  importModelId: '', storageBrowser: null, importReview: null,
 };
 
 const root = document.querySelector<HTMLElement>('#root');
@@ -85,9 +121,18 @@ function mediaUrl(o: unknown): string {
   const direct = str(o, 'media_url', 'mediaUrl', 'url', 'file_url', 'fileUrl', 'storage_url', 'storageUrl', 'path');
   if (direct) return direct;
   const fileId = str(o, 'zerostorage_file_id', 'zerostorageFileId');
-  return fileId ? buildDownloadUrl(fileId) : '';
+  if (!fileId) return '';
+  return isVideo(o) ? buildVideoEmbedUrl(fileId) : buildImageEmbedUrl(fileId);
 }
-function isVideo(o: unknown): boolean { return /video/i.test(str(o, 'type', 'media_type', 'mediaType')) || /\.(mp4|webm|mov)(\?|$)/i.test(mediaUrl(o)); }
+function modelImageUrl(o: unknown): string {
+  const fileId = str(o, 'profile_image_zerostorage_file_id', 'profileImageZeroStorageFileId');
+  if (fileId) return buildImageEmbedUrl(fileId);
+  return str(o, 'profile_image_url', 'profileImageUrl', 'cover_url', 'coverUrl', 'avatar_url', 'avatarUrl', 'image_url', 'imageUrl');
+}
+function isVideo(o: unknown): boolean {
+  return /video/i.test(str(o, 'type', 'media_type', 'mediaType'))
+    || /\.(mp4|m4v|webm|mov|mkv|avi|wmv|flv)(\?|$)/i.test(str(o, 'filename', 'name', 'media_url', 'mediaUrl', 'url'));
+}
 function icon(name: string): string {
   const paths: Record<string, string> = {
     home: '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/>',
@@ -113,6 +158,9 @@ function toast(message: string): void {
 }
 function userError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err ?? '');
+  if (/column .*profile_image_zerostorage_file_id.*does not exist|profile_image_zerostorage_file_id.*(?:does not exist|schema cache)/i.test(msg)) {
+    return 'Apply Supabase migration 003_model_zerostorage_profile_image.sql, then reload the app.';
+  }
   if (/schema cache|could not find the table|relation .* does not exist|PGRST205/i.test(msg)) {
     return 'The Supabase tables are not set up yet. Apply the SQL migrations in supabase/migrations/ in numeric order.';
   }
@@ -138,7 +186,7 @@ function navItem(path: string, label: string, ico: string): string {
 function shell(content: string): string {
   const admin = isAdmin();
   const showError = state.error && !content.includes('class="error-state"');
-  return `<div class="shell"><div class="phone-column"><header class="topbar"><a href="/" class="wordmark" data-go="/">Model Feed</a><div class="top-actions">${admin ? `<button class="plain-button small" data-go="/admin">Admin</button>` : ''}<button class="icon-button" data-go="/me" aria-label="Your account">${icon('profile')}</button></div></header>${showError ? `<div class="notice error-notice" role="alert">${esc(state.error)}</div>` : ''}<main class="page">${content}</main><nav class="bottom-nav" aria-label="Primary navigation">${navItem('/', 'Feed', 'home')}${navItem('/explore', 'Explore', 'explore')}${navItem('/models', 'Models', 'models')}${navItem('/me', 'You', 'profile')}</nav></div></div>${modalMarkup()}`;
+  return `<div class="shell"><div class="phone-column"><header class="topbar"><a href="/" class="wordmark" data-go="/">Model Feed</a><div class="top-actions">${admin ? `<button class="plain-button small" data-go="/admin">Admin</button>` : ''}<button class="icon-button" data-go="/me" aria-label="Your account">${icon('profile')}</button></div></header>${showError ? `<div class="notice error-notice" role="alert">${esc(state.error)}</div>` : ''}<main class="page">${content}</main><nav class="bottom-nav" aria-label="Primary navigation">${navItem('/', 'Feed', 'home')}${navItem('/explore', 'Explore', 'explore')}${navItem('/models', 'Models', 'models')}${navItem('/me', 'You', 'profile')}</nav></div></div>${modalMarkup()}${adminOverlayMarkup()}`;
 }
 function isAdmin(): boolean {
   const p = state.profile as AnyRecord | null;
@@ -164,7 +212,7 @@ function postCard(p: AnyRecord): string {
 }
 function modelCard(m: AnyRecord): string {
   const name = modelName(m), slug = modelSlug(m);
-  const image = str(m, 'profile_image_url', 'profileImageUrl', 'cover_url', 'coverUrl', 'avatar_url', 'avatarUrl', 'image_url', 'imageUrl');
+  const image = modelImageUrl(m);
   const followerIds = state.followed;
   const following = followerIds.has(idOf(m)) || bool(m, 'is_following', 'isFollowing', 'following');
   return `<article class="model-tile"><a href="/models/${esc(slug)}" data-go="/models/${esc(slug)}"><div class="model-image">${image ? `<img loading="lazy" src="${esc(image)}" alt="${esc(name)}">` : `<div class="media-placeholder"><span>${esc(name.slice(0,1).toUpperCase())}</span></div>`}</div><div class="model-info"><strong>${esc(name)}</strong><small>${esc(str(m, 'tagline', 'location', 'username', 'handle') || 'Creator')}</small></div></a><div class="model-info" style="padding-top:0"><button class="btn btn-outline btn-small btn-block" data-action="follow" data-id="${esc(idOf(m))}" aria-pressed="${following}">${following ? 'Following' : 'Follow'}</button></div></article>`;
@@ -175,8 +223,8 @@ function searchField(placeholder: string): string {
 async function loadPosts(args: {limit:number;offset:number;modelId?:string;type?:MediaType;search?:string}): Promise<AnyRecord[]> {
   return list(await listPosts(args));
 }
-async function loadModels(search = ''): Promise<AnyRecord[]> {
-  return list(await listModels({ search: search || undefined, limit: 60, offset: 0 }));
+async function loadModels(search = '', limit = 60): Promise<AnyRecord[]> {
+  return list(await listModels({ search: search || undefined, limit, offset: 0 }));
 }
 async function pageFeed(): Promise<string> {
   const posts = publicPosts(await loadPosts({ limit: 30, offset: 0, search: state.search || undefined }));
@@ -199,7 +247,7 @@ async function pageModel(slug: string): Promise<string> {
   if (!isAdmin() && hasAny(model,'published','is_published','isPublished') && !bool(model,'published','is_published','isPublished')) throw new Error('This creator profile is not available.');
   const id = idOf(model), posts = publicPosts(await loadPosts({limit:30,offset:0,modelId:id}));
   const name = modelName(model), followed = state.followed.has(id) || bool(model,'is_following','isFollowing','following');
-  const image = str(model,'profile_image_url','profileImageUrl','avatar_url','avatarUrl','image_url','imageUrl');
+  const image = modelImageUrl(model);
   const styles = Array.isArray(model.styles) ? model.styles as AnyRecord[] : [];
   return `<section class="model-profile">${image ? `<img class="avatar" style="object-fit:cover" src="${esc(image)}" alt="${esc(name)}">` : `<div class="avatar">${esc(name.slice(0,1).toUpperCase())}</div>`}<div style="flex:1"><span class="eyebrow">Creator</span><h1>${esc(name)}</h1><span class="muted small">${esc(str(model,'location','handle'))}</span></div><button class="btn btn-outline btn-small" data-action="follow" data-id="${esc(id)}" aria-pressed="${followed}">${followed?'Following':'Follow'}</button></section><p class="model-bio">${esc(str(model,'bio','description'))}</p>${styles.length ? `<div class="chips spacer-top">${styles.map(s=>`<a class="chip" href="/styles/${esc(str(s,'slug')||idOf(s))}" data-go="/styles/${esc(str(s,'slug')||idOf(s))}">${esc(str(s,'name','title'))}</a>`).join('')}</div>`:''}<div class="section-title"><h2>Posts</h2><span class="muted small">${posts.length} shared</span></div><div class="feed">${posts.length ? posts.map(postCard).join('') : stateBlock('empty','This creator has not shared any posts yet.')}</div>`;
 }
@@ -237,7 +285,7 @@ function authPage(): string {
 async function pageAdmin(): Promise<string> {
   if (!state.user) return `${heading('Catalog desk','Administrator access','Sign in with an administrator account to manage the catalog.')}<button class="btn btn-gold" data-go="/me">Sign in</button>`;
   if (!isAdmin()) return `${heading('Catalog desk','Not authorized','Administration is available to accounts with the administrator role.')}<button class="btn btn-outline" data-go="/">Return to feed</button>`;
-  return `${heading('Catalog desk','Administration','A quiet workspace for keeping the creator catalog current.')}<div class="admin-links"><a class="admin-link" href="/admin/models" data-go="/admin/models"><span>Models</span><small>Create and edit →</small></a><a class="admin-link" href="/admin/posts" data-go="/admin/posts"><span>Posts</span><small>Publish and curate →</small></a><a class="admin-link" href="/admin/styles" data-go="/admin/styles"><span>Styles</span><small>Create and edit →</small></a><a class="admin-link" href="/admin/import" data-go="/admin/import"><span>ZeroStorage linking</span><small>Manual media linking →</small></a></div>`;
+  return `${heading('Catalog desk','Administration','A quiet workspace for keeping the creator catalog current.')}<div class="admin-links"><a class="admin-link" href="/admin/models" data-go="/admin/models"><span>Models</span><small>Create and edit →</small></a><a class="admin-link" href="/admin/posts" data-go="/admin/posts"><span>Posts</span><small>Publish and curate →</small></a><a class="admin-link" href="/admin/styles" data-go="/admin/styles"><span>Styles</span><small>Create and edit →</small></a><a class="admin-link" href="/admin/import" data-go="/admin/import"><span>ZeroStorage import</span><small>Profiles, galleries and videos →</small></a></div>`;
 }
 async function pageAdminModels(): Promise<string> {
   if (!isAdmin()) return await pageAdmin();
@@ -253,16 +301,16 @@ async function pageAdminStyles(): Promise<string> {
 async function pageAdminPosts(): Promise<string> {
   if (!isAdmin()) return await pageAdmin();
   const posts = await loadPosts({limit:80,offset:0,search:state.search || undefined, modelId:state.filterModel || undefined, type:state.filterType==='image'?'image':state.filterType==='video'?'video':undefined});
-  return `${heading('Catalog desk','Manage posts','Review media, control visibility and keep the feed considered.')}<div class="toolbar"><h2>Posts</h2><button class="btn btn-gold btn-small" data-action="post-create">Add post</button></div>${searchField('Search captions')}<div class="filter-row"><select class="filter-select" data-filter="type" aria-label="Filter by media type"><option value="">All types</option><option value="image" ${state.filterType==='image'?'selected':''}>Images</option><option value="video" ${state.filterType==='video'?'selected':''}>Videos</option></select><select class="filter-select" data-filter="model" aria-label="Filter by model"><option value="">All models</option>${(await loadModels()).map(m=>`<option value="${esc(idOf(m))}" ${state.filterModel===idOf(m)?'selected':''}>${esc(modelName(m))}</option>`).join('')}</select></div><div class="table-list">${posts.length ? posts.map(p=>`<article class="table-row"><div class="table-row-main"><strong>${esc(postCaption(p)||'Untitled post')}</strong><small>${esc(modelName((p.model??p.models??{}) as AnyRecord))} · ${bool(p,'published','is_published','isPublished')?'Published':'Draft'}</small></div><button class="btn btn-outline btn-small" data-action="post-publish" data-id="${esc(idOf(p))}" data-published="${bool(p,'published','is_published','isPublished')}">${bool(p,'published','is_published','isPublished')?'Unpublish':'Publish'}</button><button class="btn btn-outline btn-small" data-action="post-edit" data-id="${esc(idOf(p))}">Edit</button><button class="btn btn-danger btn-small" data-action="post-delete" data-id="${esc(idOf(p))}">Delete</button></article>`).join('') : stateBlock('empty','No posts match these filters.')}</div>`;
+  return `${heading('Catalog desk','Manage posts','Review media, control visibility and keep the feed considered.')}<div class="toolbar"><h2>Posts</h2><div class="row"><button class="btn btn-outline btn-small" data-go="/admin/import">Import from ZeroStorage</button><button class="btn btn-gold btn-small" data-action="post-create">Add post</button></div></div>${searchField('Search captions')}<div class="filter-row"><select class="filter-select" data-filter="type" aria-label="Filter by media type"><option value="">All types</option><option value="image" ${state.filterType==='image'?'selected':''}>Images</option><option value="video" ${state.filterType==='video'?'selected':''}>Videos</option></select><select class="filter-select" data-filter="model" aria-label="Filter by model"><option value="">All models</option>${(await loadModels()).map(m=>`<option value="${esc(idOf(m))}" ${state.filterModel===idOf(m)?'selected':''}>${esc(modelName(m))}</option>`).join('')}</select></div><div class="table-list">${posts.length ? posts.map(p=>`<article class="table-row"><div class="table-row-main"><strong>${esc(postCaption(p)||'Untitled post')}</strong><small>${esc(modelName((p.model??p.models??{}) as AnyRecord))} · ${bool(p,'published','is_published','isPublished')?'Published':'Draft'}</small></div><button class="btn btn-outline btn-small" data-action="post-publish" data-id="${esc(idOf(p))}" data-published="${bool(p,'published','is_published','isPublished')}">${bool(p,'published','is_published','isPublished')?'Unpublish':'Publish'}</button><button class="btn btn-outline btn-small" data-action="post-edit" data-id="${esc(idOf(p))}">Edit</button><button class="btn btn-danger btn-small" data-action="post-delete" data-id="${esc(idOf(p))}">Delete</button></article>`).join('') : stateBlock('empty','No posts match these filters.')}</div>`;
 }
-function pageImport(): string {
-  if (!isAdmin()) return `${heading('Catalog desk','Administrator access')}<button class="btn btn-gold" data-go="/me">Sign in</button>`;
-  const selected = state.selectedFile;
-  const source = str(selected, 'source');
-  const mediaType = str(selected, 'type');
-  const valid = (source === 'wt' && mediaType === 'video')
-    || ((source === 'ctele' || source === 'eb') && mediaType === 'image');
-  return `${heading('Manual media linking','ZeroStorage','Browse folders and create one post for each selected file.')}<div class="notice"><span class="eyebrow">Future feature</span><p>Bulk CSV import is not available. Each linked ZeroStorage file becomes its own post; the file ID is kept as the unique media identity.</p></div><div class="section-title"><h2>Choose a file</h2></div><div class="row-between"><button class="btn btn-outline btn-small" data-action="folder-up" ${state.folderStack.length ? '' : 'disabled'}>← Parent folder</button><span class="muted small">${esc(state.folderPath || 'Root folder')}</span></div><div id="storage-browser" class="storage-list">${state.modalData.storageHtml || `<button class="storage-item" data-action="storage-load">Browse ZeroStorage <span>→</span></button>`}</div>${selected ? `<div class="notice"><strong class="gold">${esc(fileName(selected))}</strong><p>File ID: ${esc(str(selected,'id'))}${source ? ` · Source: ${esc(source.toUpperCase())}` : ' · Choose a source in the next step'}${mediaType ? ` · Detected as ${esc(mediaType)}` : ''}</p>${!valid ? `<p class="small">Only CTele/EB images and WT videos can be linked. If the folder source is unknown, choose the correct source before saving.</p>` : ''}<button class="btn btn-gold btn-block spacer-top" data-action="post-create-selected">Create a post for this file</button></div>` : ''}`;
+async function pageImport(): Promise<string> {
+  if (!isAdmin()) return await pageAdmin();
+  const models = await loadModels('', 100);
+  if (!models.some((model) => idOf(model) === state.importModelId)) state.importModelId = '';
+  return renderAdminImport({
+    models: models.map((model) => ({ id: idOf(model), name: modelName(model) })),
+    selectedModelId: state.importModelId,
+  });
 }
 async function page(route: Route): Promise<string> {
   const s = route.segments;
@@ -286,17 +334,66 @@ function modalMarkup(): string {
   const d = state.modalData;
   if (state.modal === 'comments') return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="modal-head"><h2 id="dialog-title">Conversation</h2><button class="icon-button" data-action="close-modal" aria-label="Close">${icon('close')}</button></div><div class="comments">${d.loading?'<div class="skeleton-line"></div>':d.comments?.length?d.comments.map((c:AnyRecord)=>`<div class="comment"><div class="row-between"><strong>${esc(str(c,'display_name','displayName','author_name')||'Member')}</strong>${isAdmin()?`<button class="plain-button small" data-action="comment-delete" data-id="${esc(idOf(c))}">Remove</button>`:''}</div><p>${esc(str(c,'body','content','text'))}</p></div>`).join(''):`<p class="muted small">Be the first to leave a thoughtful note.</p>`}</div>${state.user?`<form data-form="comment"><input type="hidden" name="postId" value="${esc(d.postId)}"><div class="field"><label for="comment-body">Add a comment</label><textarea id="comment-body" name="body" maxlength="2000" required placeholder="Write something considered…"></textarea></div><button class="btn btn-gold btn-block" type="submit">Post comment</button></form>`:`<button class="btn btn-outline btn-block" data-go="/me">Sign in to comment</button>`}</section></div>`;
   if (state.modal === 'model-form') {
-    const m = d.model || {};
-     return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="modal-head"><h2 id="dialog-title">${d.edit?'Edit model':'New model'}</h2><button class="icon-button" data-action="close-modal" aria-label="Close">${icon('close')}</button></div><form data-form="model"><input type="hidden" name="id" value="${esc(idOf(m))}"><div class="field"><label for="m-name">Display name</label><input id="m-name" name="name" required value="${esc(str(m,'display_name','displayName','name'))}"></div><div class="field"><label for="m-username">Username (optional)</label><input id="m-username" name="username" value="${esc(str(m,'username'))}"></div><div class="field"><label for="m-slug">Slug</label><input id="m-slug" name="slug" required value="${esc(str(m,'slug'))}"></div><div class="field"><label for="m-bio">Bio</label><textarea id="m-bio" name="bio">${esc(str(m,'bio','description'))}</textarea></div><div class="field"><label for="m-cover">Profile image URL</label><input id="m-cover" name="imageUrl" type="url" value="${esc(str(m,'avatar_url','avatarUrl','image_url','imageUrl','profile_image_url','profileImageUrl'))}"></div><div class="field"><label><input type="checkbox" name="published" ${bool(m,'published','is_published','isPublished')?'checked':''}> Published</label></div><div class="field"><label>Styles</label><div class="chips">${state.styles.map((st:AnyRecord)=>`<label class="chip"><input type="checkbox" name="styleIds" value="${esc(idOf(st))}" ${((Array.isArray(m.styles)&&m.styles.some((x:AnyRecord)=>idOf(x)===idOf(st)))||(Array.isArray(m.style_ids)&&m.style_ids.includes(idOf(st)))||(Array.isArray(m.styleIds)&&m.styleIds.includes(idOf(st))))?'checked':''}> ${esc(str(st,'name','title'))}</label>`).join('') || '<span class="muted small">Add styles first to attach them to a model.</span>'}</div></div><button class="btn btn-gold btn-block" type="submit">${d.edit?'Save changes':'Create model'}</button></form></section></div>`;
+     const sourceModel = d.model || {};
+     const draft = d.draft || {};
+     const m = {
+       ...sourceModel,
+       name: draft.name ?? str(sourceModel,'display_name','displayName','name'),
+       username: draft.username ?? str(sourceModel,'username'),
+       slug: draft.slug ?? str(sourceModel,'slug'),
+       description: draft.bio ?? str(sourceModel,'bio','description'),
+       profile_image_url: draft.imageUrl ?? str(sourceModel,'avatar_url','avatarUrl','image_url','imageUrl','profile_image_url','profileImageUrl'),
+       profile_image_zerostorage_file_id: draft.profileFileId ?? str(sourceModel,'profile_image_zerostorage_file_id','profileImageZeroStorageFileId'),
+       published: draft.published ?? bool(sourceModel,'published','is_published','isPublished'),
+       styleIds: draft.styleIds ?? [],
+     };
+     const profileFileId = str(m,'profile_image_zerostorage_file_id');
+     const profilePreview = profileFileId ? buildImageEmbedUrl(profileFileId) : str(m,'profile_image_url');
+      return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="modal-head"><h2 id="dialog-title">${d.edit?'Edit model':'New model'}</h2><button class="icon-button" data-action="close-modal" aria-label="Close">${icon('close')}</button></div><form data-form="model"><input type="hidden" name="id" value="${esc(idOf(m))}"><div class="field"><label for="m-name">Display name</label><input id="m-name" name="name" required value="${esc(str(m,'display_name','displayName','name'))}"></div><div class="field"><label for="m-username">Username (optional)</label><input id="m-username" name="username" value="${esc(str(m,'username'))}"></div><div class="field"><label for="m-slug">Slug</label><input id="m-slug" name="slug" required value="${esc(str(m,'slug'))}"></div><div class="field"><label for="m-bio">Bio</label><textarea id="m-bio" name="bio">${esc(str(m,'bio','description'))}</textarea></div><div class="field"><label for="m-cover">Profile image URL</label><input id="m-cover" name="imageUrl" type="url" value="${esc(str(m,'profile_image_url','profileImageUrl'))}"><input type="hidden" name="profileFileId" value="${esc(profileFileId)}"><button type="button" class="btn btn-outline btn-small" data-action="profile-image-select">Choose a single image from ZeroStorage</button>${profilePreview ? `<img class="profile-image-preview" src="${esc(profilePreview)}" alt="Profile image preview">` : ''}${profileFileId ? `<small class="muted profile-storage-file-id">ZeroStorage file ID: ${esc(profileFileId)}</small>` : ''}</div><div class="field"><label><input type="checkbox" name="published" ${bool(m,'published','is_published','isPublished')?'checked':''}> Published</label></div><div class="field"><label>Styles</label><div class="chips">${state.styles.map((st:AnyRecord)=>`<label class="chip"><input type="checkbox" name="styleIds" value="${esc(idOf(st))}" ${((Array.isArray(m.styles)&&m.styles.some((x:AnyRecord)=>idOf(x)===idOf(st)))||(Array.isArray(m.style_ids)&&m.style_ids.includes(idOf(st)))||(Array.isArray(m.styleIds)&&m.styleIds.includes(idOf(st))))?'checked':''}> ${esc(str(st,'name','title'))}</label>`).join('') || '<span class="muted small">Add styles first to attach them to a model.</span>'}</div></div><button class="btn btn-gold btn-block" type="submit">${d.edit?'Save changes':'Create model'}</button></form></section></div>`;
   }
   if (state.modal === 'post-form') {
     const p = d.post || {};
     const models = d.models || [];
-     return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="modal-head"><h2 id="dialog-title">${d.edit?'Edit post':'New post'}</h2><button class="icon-button" data-action="close-modal" aria-label="Close">${icon('close')}</button></div><form data-form="post"><input type="hidden" name="id" value="${esc(idOf(p))}"><div class="field"><label for="p-model">Model</label><select id="p-model" name="modelId" required><option value="">Choose a model</option>${models.map((m:AnyRecord)=>`<option value="${esc(idOf(m))}" ${(str(p,'model_id','modelId')===idOf(m)||idOf(p.model)===idOf(m))?'selected':''}>${esc(modelName(m))}</option>`).join('')}</select></div><div class="field"><label for="p-caption">Caption</label><textarea id="p-caption" name="caption">${esc(postCaption(p))}</textarea></div><div class="field"><label for="p-file-id">ZeroStorage file ID</label><input id="p-file-id" name="fileId" maxlength="255" value="${esc(str(p,'zerostorage_file_id','zerostorageFileId')||str(state.selectedFile,'id'))}" required></div><div class="field"><label for="p-filename">Filename</label><input id="p-filename" name="filename" maxlength="255" value="${esc(str(p,'filename')||str(state.selectedFile,'name'))}"></div><div class="field"><label for="p-source">Content source</label><select id="p-source" name="source" required><option value="">Choose a source</option><option value="ctele" ${str(p,'source')==='ctele'?'selected':''}>CTele · images only</option><option value="eb" ${str(p,'source')==='eb'?'selected':''}>EB · images only</option><option value="wt" ${str(p,'source')==='wt'?'selected':''}>WT · videos only</option></select></div><p class="muted small">Media type follows the source: CTele and EB files are images; WT files are videos.</p><div class="field"><label for="p-source-path">Folder path (optional)</label><input id="p-source-path" name="sourcePath" maxlength="1000" value="${esc(str(p,'source_path','sourcePath')||str(state.selectedFile,'source_path'))}"></div><div class="field"><label>Styles</label><div class="chips">${state.styles.map((st:AnyRecord)=>`<label class="chip"><input type="checkbox" name="styleIds" value="${esc(idOf(st))}" ${((Array.isArray(p.styles)&&p.styles.some((x:AnyRecord)=>idOf(x)===idOf(st)))||(Array.isArray(p.style_ids)&&p.style_ids.includes(idOf(st))))?'checked':''}> ${esc(str(st,'name'))}</label>`).join('') || '<span class="muted small">No styles have been added yet.</span>'}</div></div><div class="field"><label><input type="checkbox" name="published" ${bool(p,'published','is_published','isPublished')?'checked':''}> Published</label></div><button class="btn btn-gold btn-block" type="submit">${d.edit?'Save changes':'Create post'}</button></form></section></div>`;
+      return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="modal-head"><h2 id="dialog-title">${d.edit?'Edit post':'New post'}</h2><button class="icon-button" data-action="close-modal" aria-label="Close">${icon('close')}</button></div><form data-form="post"><input type="hidden" name="id" value="${esc(idOf(p))}"><div class="field"><label for="p-model">Model</label><select id="p-model" name="modelId" required><option value="">Choose a model</option>${models.map((m:AnyRecord)=>`<option value="${esc(idOf(m))}" ${(str(p,'model_id','modelId')===idOf(m)||idOf(p.model)===idOf(m))?'selected':''}>${esc(modelName(m))}</option>`).join('')}</select></div><div class="field"><label for="p-caption">Caption</label><textarea id="p-caption" name="caption">${esc(postCaption(p))}</textarea></div><div class="field"><label for="p-file-id">ZeroStorage file ID</label><input id="p-file-id" name="fileId" maxlength="255" value="${esc(str(p,'zerostorage_file_id','zerostorageFileId'))}" required></div><div class="field"><label for="p-filename">Filename</label><input id="p-filename" name="filename" maxlength="255" value="${esc(str(p,'filename'))}"></div><div class="field"><label for="p-source">Content source</label><select id="p-source" name="source" required><option value="">Choose a source</option><option value="ctele" ${str(p,'source')==='ctele'?'selected':''}>CTele · images only</option><option value="eb" ${str(p,'source')==='eb'?'selected':''}>EB · images only</option><option value="wt" ${str(p,'source')==='wt'?'selected':''}>WT · videos only</option></select></div><p class="muted small">Media type follows the source: CTele and EB files are images; WT files are videos.</p><div class="field"><label for="p-source-path">Folder path (optional)</label><input id="p-source-path" name="sourcePath" maxlength="1000" value="${esc(str(p,'source_path','sourcePath'))}"></div><div class="field"><label>Styles</label><div class="chips">${state.styles.map((st:AnyRecord)=>`<label class="chip"><input type="checkbox" name="styleIds" value="${esc(idOf(st))}" ${((Array.isArray(p.styles)&&p.styles.some((x:AnyRecord)=>idOf(x)===idOf(st)))||(Array.isArray(p.style_ids)&&p.style_ids.includes(idOf(st))))?'checked':''}> ${esc(str(st,'name'))}</label>`).join('') || '<span class="muted small">No styles have been added yet.</span>'}</div></div><div class="field"><label><input type="checkbox" name="published" ${bool(p,'published','is_published','isPublished')?'checked':''}> Published</label></div><button class="btn btn-gold btn-block" type="submit">${d.edit?'Save changes':'Create post'}</button></form></section></div>`;
   }
   if (state.modal === 'confirm-delete') return `<div class="modal-backdrop"><section class="modal" role="alertdialog" aria-modal="true"><div class="modal-head"><h2>Remove this post?</h2><button class="icon-button" data-action="close-modal" aria-label="Close">${icon('close')}</button></div><p class="muted">The post and its comments, Likes, MMCs and style links will be deleted. The original file remains in ZeroStorage.</p><div class="row"><button class="btn btn-danger" data-action="confirm-post-delete" data-id="${esc(d.id)}">Delete post</button><button class="btn" data-action="close-modal">Cancel</button></div></section></div>`;
   if (state.modal === 'confirm-model-delete') return `<div class="modal-backdrop"><section class="modal" role="alertdialog" aria-modal="true" aria-labelledby="dialog-title"><div class="modal-head"><h2 id="dialog-title">Delete ${esc(d.name||'this model')}?</h2><button class="icon-button" data-action="close-modal" aria-label="Close">${icon('close')}</button></div><p class="muted">This permanently deletes the model, linked posts, comments, Likes, MMCs, follows and style links. The original files remain in ZeroStorage.</p><div class="row"><button class="btn btn-danger" data-action="confirm-model-delete" data-id="${esc(d.id)}">Delete model and posts</button><button class="btn" data-action="close-modal">Cancel</button></div></section></div>`;
   return '';
+}
+
+function adminOverlayMarkup(): string {
+  if (state.importReview) {
+    return `<div class="import-review-overlay" data-testid="import-review-overlay">${renderImportReview(state.importReview)}</div>`;
+  }
+  const browser = state.storageBrowser;
+  if (!browser) return '';
+  const sourcePath = ['0RMCOIN', ...browser.stack.map((folder) => folder.name)].join('/');
+  const source = sourceForPath(sourcePath);
+  const files = browser.files.map((file) => ({
+    ...file,
+    compatible: browser.mode === 'profile'
+      ? file.type === 'image'
+      : browser.mode === 'gallery'
+        ? file.type === 'image' && (source === 'ctele' || source === 'eb')
+        : file.type === 'video' && source === 'wt',
+  }));
+  const view: ZeroStorageBrowserState = {
+    mode: browser.mode,
+    breadcrumbs: browser.stack.map((folder) => ({ id: folder.id, name: folder.name })),
+    folders: browser.folders,
+    files,
+    selectedFileIds: browser.selectedFiles.map((file) => file.id),
+    selectedFolderIds: browser.selectedFolders.map((folder) => folder.id),
+    loading: browser.loading,
+    error: browser.error,
+    page: browser.page,
+    totalPages: Math.max(
+      1,
+      Math.ceil(browser.folderTotal / 100),
+      Math.ceil(browser.fileTotal / 100),
+    ),
+  };
+  return renderZeroStorageBrowser(view);
 }
 
 async function refreshSession(): Promise<void> {
@@ -332,8 +429,12 @@ async function render(): Promise<void> {
     if (generation !== state.generation) return;
     root!.innerHTML = shell(content);
     observeMedia();
-    if (state.modal) {
-      const focusTarget = root!.querySelector<HTMLElement>('.modal input, .modal textarea, .modal select, .modal button');
+    if (state.importReview || state.storageBrowser || state.modal) {
+      const focusTarget = state.importReview
+        ? root!.querySelector<HTMLElement>('.import-review-overlay button:not([disabled])')
+        : state.storageBrowser
+          ? root!.querySelector<HTMLElement>('.zsb-dialog button:not([disabled])')
+          : root!.querySelector<HTMLElement>('.modal input, .modal textarea, .modal select, .modal button');
       focusTarget?.focus();
     }
   } catch (err) {
@@ -361,7 +462,6 @@ function observeMedia(): void {
   videos.forEach(v => videoObserver!.observe(v));
 }
 function formValues(form: HTMLFormElement): FormData { return new FormData(form); }
-function fileName(o: AnyRecord): string { return str(o,'name','filename','path','key') || 'Untitled file'; }
 async function openComments(postId: string): Promise<void> {
   state.modal = 'comments';
   state.modalData = { postId, loading: true, comments: [] };
@@ -376,33 +476,429 @@ async function openComments(postId: string): Promise<void> {
     toast(userError(err));
   }
 }
-async function loadStorage(): Promise<void> {
-  state.modalData.storageLoading = true;
+function currentStorageFolder(browser: StorageBrowserSession): ZeroFolder {
+  return browser.stack.at(-1) ?? browser.rootFolder;
+}
+
+function currentStoragePath(browser: StorageBrowserSession): string {
+  return [browser.rootFolder.name || '0RMCOIN', ...browser.stack.map((folder) => folder.name)].join('/');
+}
+
+async function loadStorageBrowser(browser: StorageBrowserSession): Promise<void> {
+  const requestId = ++browser.requestId;
+  browser.loading = true;
+  browser.error = undefined;
   await render();
   try {
-    const [foldersRaw, filesRaw] = await Promise.all([
-      listFolders(state.folderId || undefined, state.storagePage),
-      listFiles(state.folderId || undefined, state.storagePage),
+    const current = currentStorageFolder(browser);
+    const [folders, files] = await Promise.all([
+      listFolders(current.id, browser.page),
+      listFiles(current.id, browser.page),
     ]);
-    const folders = list(foldersRaw), files = list(filesRaw);
-    state.storageTotals = {
-      folders: Number((foldersRaw as AnyRecord).total) || folders.length,
-      files: Number((filesRaw as AnyRecord).total) || files.length,
-    };
-    const pages = Math.max(
-      Math.ceil(state.storageTotals.folders / 100),
-      Math.ceil(state.storageTotals.files / 100),
-      1,
-    );
-    const folderItems = folders.map(f=>`<button class="storage-item" data-action="open-folder" data-id="${esc(idOf(f))}" data-name="${esc(fileName(f))}"><span>Folder · ${esc(fileName(f))}</span><span>→</span></button>`).join('');
-    const fileItems = files.map(f=>`<button class="storage-item ${state.selectedFile && str(state.selectedFile,'id')===str(f,'id')?'selected':''}" data-action="select-file" data-id="${esc(str(f,'id'))}" data-name="${esc(fileName(f))}" data-type="${esc(str(f,'type'))}"><span>File · ${esc(fileName(f))}</span><span>Select</span></button>`).join('');
-    const pager = pages > 1
-      ? `<div class="storage-pager"><button class="btn btn-outline btn-small" data-action="storage-page" data-direction="-1" ${state.storagePage <= 1 ? 'disabled' : ''}>Previous</button><span class="muted small">Page ${state.storagePage} of ${pages}</span><button class="btn btn-outline btn-small" data-action="storage-page" data-direction="1" ${state.storagePage >= pages ? 'disabled' : ''}>Next</button></div>`
-      : '';
-    state.modalData.storageHtml = `${folderItems}${fileItems}${!folders.length&&!files.length?'<p class="muted small" style="padding:12px">This folder is empty.</p>':''}${pager}`;
-  } catch (err) { state.modalData.storageHtml = stateBlock('error', userError(err)); }
-  state.modalData.storageLoading = false;
+    if (state.storageBrowser !== browser || browser.requestId !== requestId) return;
+    browser.folders = folders.items;
+    browser.files = files.items;
+    browser.folderTotal = folders.total;
+    browser.fileTotal = files.total;
+  } catch (err) {
+    if (state.storageBrowser !== browser || browser.requestId !== requestId) return;
+    browser.error = userError(err);
+  } finally {
+    if (state.storageBrowser === browser && browser.requestId === requestId) {
+      browser.loading = false;
+      await render();
+    }
+  }
+}
+
+async function openStorageBrowser(mode: ImportMode, purpose: 'profile' | 'bulk'): Promise<void> {
+  if (purpose === 'profile') captureModelFormDraft();
+  const browser: StorageBrowserSession = {
+    mode,
+    purpose,
+    rootFolder: { id: '', name: '0RMCOIN' },
+    stack: [],
+    folders: [],
+    files: [],
+    selectedFiles: [],
+    selectedFolders: [],
+    page: 1,
+    folderTotal: 0,
+    fileTotal: 0,
+    loading: true,
+    requestId: 0,
+  };
+  state.storageBrowser = browser;
+  state.importReview = null;
   await render();
+  try {
+    browser.rootFolder = await findApplicationRootFolder();
+    if (state.storageBrowser === browser) await loadStorageBrowser(browser);
+  } catch (err) {
+    if (state.storageBrowser !== browser) return;
+    browser.loading = false;
+    browser.error = userError(err);
+    await render();
+  }
+}
+
+function captureModelFormDraft(): void {
+  const form = root!.querySelector<HTMLFormElement>('form[data-form="model"]');
+  if (!form) return;
+  const values = new FormData(form);
+  state.modalData.draft = {
+    name: String(values.get('name') ?? ''),
+    username: String(values.get('username') ?? ''),
+    slug: String(values.get('slug') ?? ''),
+    bio: String(values.get('bio') ?? ''),
+    imageUrl: String(values.get('imageUrl') ?? ''),
+    profileFileId: String(values.get('profileFileId') ?? ''),
+    published: values.has('published'),
+    styleIds: values.getAll('styleIds').map(String),
+  };
+}
+
+function browserFile(browser: StorageBrowserSession, file: ZeroFile): ZeroStorageImportFile {
+  const folder = currentStorageFolder(browser);
+  const sourcePath = currentStoragePath(browser);
+  return {
+    ...file,
+    parentFolderId: folder.id,
+    sourcePath,
+    source: sourceForPath(sourcePath),
+  };
+}
+
+function modelFormName(): string {
+  const input = root!.querySelector<HTMLInputElement>('form[data-form="model"] [name="name"]');
+  return input?.value.trim() || modelName(state.modalData.model);
+}
+
+async function prepareStorageReview(): Promise<void> {
+  const browser = state.storageBrowser;
+  if (!browser) throw new Error('The ZeroStorage browser is no longer open.');
+  if (browser.mode === 'profile') {
+    if (browser.selectedFiles.length !== 1) throw new Error('Choose exactly one image for the profile.');
+    const validation = await revalidateZeroStorageFiles(browser.selectedFiles);
+    if (validation.missing.length) throw new Error('That image is no longer available in ZeroStorage. Choose another image.');
+    const file = validation.available[0];
+    if (file.type !== 'image') throw new Error('Only image files can be used as profile images.');
+    const group: ImportReviewGroup = {
+      id: 'profile-image',
+      name: 'Profile image',
+      caption: '',
+      files: [{ id: file.id, name: file.name, type: file.type, duplicate: false }],
+      styleIds: [],
+    };
+    state.importReview = {
+      mode: 'profile',
+      purpose: 'profile',
+      modelId: '',
+      modelName: modelFormName(),
+      styles: [],
+      groups: [group],
+      videos: [],
+      groupFiles: { [group.id]: [file] },
+      videoFiles: [],
+      videoTags: {},
+      publishing: false,
+      progressText: 'Image is ready to assign.',
+    };
+    await render();
+    return;
+  }
+
+  const modelId = state.importModelId;
+  if (!modelId) throw new Error('Choose a creator before browsing media.');
+  const model = await getModelDetail(modelId);
+  if (!model) throw new Error('The selected creator could not be found. Choose a creator again.');
+  const styles = state.styles.map((style) => ({ id: idOf(style), name: str(style, 'name') }));
+  let groups: ImportReviewGroup[] = [];
+  let videos: ImportReviewVideo[] = [];
+  const groupFiles: Record<string, ZeroStorageImportFile[]> = {};
+  const videoFiles: ZeroStorageImportFile[] = [];
+  const videoTags: Record<string, string[]> = {};
+
+  if (browser.mode === 'gallery') {
+    const assigned = new Set<string>();
+    const groupMeta: Array<{ id: string; name: string; caption: string; files: ZeroStorageImportFile[] }> = [];
+    for (const folder of browser.selectedFolders) {
+      const discovered = await collectMediaUnderFolder(folder, 'image');
+      if (!discovered.length) {
+        throw new Error(`No CTele or EB images were found in “${folder.name}”. Deselect it or choose a different folder.`);
+      }
+      const files = discovered.filter((file) => !assigned.has(file.id));
+      for (const file of files) assigned.add(file.id);
+      if (files.length) {
+        groupMeta.push({
+          id: `folder:${folder.id}`,
+          name: folder.name,
+          caption: folder.name,
+          files,
+        });
+      }
+    }
+
+    const directByParent = new Map<string, ZeroStorageImportFile[]>();
+    for (const selected of browser.selectedFiles) {
+      const file = selected;
+      if (file.type !== 'image' || (file.source !== 'ctele' && file.source !== 'eb')) {
+        throw new Error(`“${file.name}” is not a CTele or EB image.`);
+      }
+      if (assigned.has(file.id)) continue;
+      const group = directByParent.get(file.parentFolderId) ?? [];
+      group.push(file);
+      directByParent.set(file.parentFolderId, group);
+      assigned.add(file.id);
+    }
+    for (const [parentFolderId, files] of directByParent) {
+      const sourcePath = files[0].sourcePath;
+      const folderName = sourcePath.split('/').filter(Boolean).at(-1) || 'Selected images';
+      groupMeta.push({
+        id: `folder:${parentFolderId}`,
+        name: folderName,
+        caption: folderName,
+        files,
+      });
+    }
+    if (!groupMeta.length) throw new Error('No compatible images are selected.');
+    const imported = await findImportedFileIds(groupMeta.flatMap((group) => group.files.map((file) => file.id)));
+    groups = groupMeta.map((group) => {
+      groupFiles[group.id] = group.files;
+      return {
+        id: group.id,
+        name: group.name,
+        caption: group.caption,
+        files: group.files.map((file) => ({
+          id: file.id,
+          name: file.name,
+          type: file.type,
+          duplicate: imported.has(file.id),
+        })),
+        styleIds: [],
+      };
+    });
+  } else {
+    const files = browser.selectedFiles;
+    for (const file of files) {
+      if (file.type !== 'video' || file.source !== 'wt') {
+        throw new Error(`“${file.name}” is not a WT video.`);
+      }
+    }
+    const uniqueFiles = [...new Map(files.map((file) => [file.id, file])).values()];
+    if (!uniqueFiles.length) throw new Error('Choose at least one WT video.');
+    const imported = await findImportedFileIds(uniqueFiles.map((file) => file.id));
+    const stylesBySlug = new Map(styles.map((style) => [normalizeStyleSlug(style.name), style.id]));
+    videoFiles.push(...uniqueFiles);
+    videos = uniqueFiles.map((file) => {
+      const filenameTags = styleTagsFromFilename(file.name);
+      videoTags[file.id] = filenameTags;
+      const styleIds = [...new Set(filenameTags
+        .map((tag) => stylesBySlug.get(normalizeStyleSlug(tag)))
+        .filter((styleId): styleId is string => Boolean(styleId)))];
+      return {
+        id: file.id,
+        name: file.name,
+        caption: captionFromFilename(file.name),
+        duplicate: imported.has(file.id),
+        styleIds,
+        filenameTags,
+      };
+    });
+  }
+
+  state.importReview = {
+    mode: browser.mode,
+    purpose: 'bulk',
+    modelId,
+    modelName: model.name,
+    styles,
+    groups,
+    videos,
+    groupFiles,
+    videoFiles,
+    videoTags,
+    publishing: false,
+    progressText: 'Ready to import.',
+  };
+  await render();
+}
+
+function fileIsSelectable(browser: StorageBrowserSession, file: ZeroFile): boolean {
+  if (browser.mode === 'profile') return file.type === 'image';
+  const source = sourceForPath(currentStoragePath(browser));
+  if (browser.mode === 'gallery') return file.type === 'image' && (source === 'ctele' || source === 'eb');
+  return file.type === 'video' && source === 'wt';
+}
+
+function toggleReviewStyle(groupId: string, styleId: string): void {
+  const review = state.importReview;
+  if (!review) return;
+  const target = review.groups.find((group) => group.id === groupId)
+    ?? review.videos.find((video) => video.id === groupId);
+  if (!target) return;
+  target.styleIds = target.styleIds.includes(styleId)
+    ? target.styleIds.filter((id) => id !== styleId)
+    : [...target.styleIds, styleId];
+}
+
+async function createReviewStyle(groupId: string): Promise<void> {
+  const review = state.importReview;
+  if (!review || review.purpose !== 'bulk') throw new Error('Styles can only be assigned to a media import.');
+  const input = document.getElementById(`style-create-${groupId}`);
+  if (!(input instanceof HTMLInputElement)) throw new Error('Enter a style name first.');
+  const style = await findOrCreateStyle(input.value);
+  if (!state.styles.some((item) => idOf(item) === style.id)) state.styles.push(style as AnyRecord);
+  review.styles = state.styles.map((item) => ({ id: idOf(item), name: str(item, 'name') }));
+  const target = review.groups.find((group) => group.id === groupId)
+    ?? review.videos.find((video) => video.id === groupId);
+  if (target && !target.styleIds.includes(style.id)) target.styleIds.push(style.id);
+  toast(`Style “${style.name}” selected.`);
+  await render();
+}
+
+function updateReviewCaption(groupId: string, caption: string): void {
+  const review = state.importReview;
+  if (!review) return;
+  const group = review.groups.find((item) => item.id === groupId);
+  if (group) group.caption = caption;
+  const video = review.videos.find((item) => item.id === groupId);
+  if (video) video.caption = caption;
+}
+
+async function publishStorageImport(): Promise<void> {
+  const review = state.importReview;
+  if (!review) throw new Error('There is no import to publish.');
+  if (review.purpose === 'profile') {
+    const file = review.groupFiles['profile-image']?.[0];
+    if (!file) throw new Error('Choose a profile image before setting it.');
+    const checked = await revalidateZeroStorageFiles([file]);
+    if (checked.missing.length || checked.available[0]?.type !== 'image') {
+      throw new Error('That image is no longer available. Choose another profile image.');
+    }
+    const draft = state.modalData.draft ?? {};
+    state.modalData.draft = { ...draft, profileFileId: checked.available[0].id, imageUrl: '' };
+    state.importReview = null;
+    state.storageBrowser = null;
+    await render();
+    toast('Profile image selected. Save the model to apply it.');
+    return;
+  }
+
+  review.publishing = true;
+  review.progressText = 'Checking file availability and duplicates…';
+  await render();
+  try {
+    const expectedType: MediaType = review.mode === 'video' ? 'video' : 'image';
+    const selectedFiles = review.mode === 'gallery'
+      ? Object.values(review.groupFiles).flat()
+      : review.videoFiles;
+    const uniqueSelected = [...new Map(selectedFiles.map((file) => [file.id, file])).values()];
+    const checked = await revalidateZeroStorageFiles(uniqueSelected);
+    if (checked.missing.length) {
+      const names = checked.missing.slice(0, 3).map((file) => file.name).join(', ');
+      throw new Error(`Some selected files are no longer available${names ? `: ${names}` : ''}. Return to the browser and choose them again.`);
+    }
+    const invalid = checked.available.find((file) => {
+      if (file.type !== expectedType) return true;
+      return expectedType === 'image'
+        ? file.source !== 'ctele' && file.source !== 'eb'
+        : file.source !== 'wt';
+    });
+    if (invalid) throw new Error(`“${invalid.name}” is not a compatible ${expectedType} for its source folder.`);
+
+    const duplicateIds = await findImportedFileIds(checked.available.map((file) => file.id));
+    for (const group of review.groups) {
+      group.files = group.files.map((file) => ({ ...file, duplicate: duplicateIds.has(file.id) }));
+    }
+    review.videos = review.videos.map((video) => ({ ...video, duplicate: duplicateIds.has(video.id) }));
+
+    const availableById = new Map(checked.available.map((file) => [file.id, file]));
+    const importItems: Array<{
+      file: ZeroStorageImportFile;
+      caption: string;
+      styleIds: string[];
+      tags: string[];
+    }> = [];
+    for (const group of review.groups) {
+      for (const selected of review.groupFiles[group.id] ?? []) {
+        const file = availableById.get(selected.id);
+        if (!file || duplicateIds.has(file.id)) continue;
+        importItems.push({ file, caption: group.caption, styleIds: group.styleIds, tags: [] });
+      }
+    }
+    for (const video of review.videos) {
+      const file = availableById.get(video.id);
+      if (!file || duplicateIds.has(video.id)) continue;
+      importItems.push({
+        file,
+        caption: video.caption,
+        styleIds: video.styleIds,
+        tags: review.videoTags[video.id] ?? [],
+      });
+    }
+    const distinctItems = [...new Map(importItems.map((item) => [item.file.id, item])).values()];
+    const skipped = duplicateIds.size;
+    if (!distinctItems.length) {
+      throw new Error(skipped
+        ? 'Every selected file is already imported. No duplicate posts were created.'
+        : 'No available files remain to import.');
+    }
+
+    const tagNames = [...new Set(distinctItems.flatMap((item) => item.tags))];
+    const tagStyles = await Promise.all(tagNames.map((tag) => findOrCreateStyle(tag)));
+    const stylesBySlug = new Map(tagStyles.map((style) => [normalizeStyleSlug(style.name), style]));
+    for (const style of tagStyles) {
+      if (!state.styles.some((item) => idOf(item) === style.id)) state.styles.push(style as AnyRecord);
+    }
+    review.styles = state.styles.map((item) => ({ id: idOf(item), name: str(item, 'name') }));
+
+    let created = 0;
+    let skippedDuringCreate = 0;
+    for (let index = 0; index < distinctItems.length; index += 1) {
+      const item = distinctItems[index];
+      const taggedIds = item.tags
+        .map((tag) => stylesBySlug.get(normalizeStyleSlug(tag))?.id)
+        .filter((styleId): styleId is string => Boolean(styleId));
+      review.progressText = `Importing ${index + 1} of ${distinctItems.length}…`;
+      if (index === 0 || index % 4 === 3) await render();
+      try {
+        await createPost({
+          model_id: review.modelId,
+          caption: item.caption,
+          zerostorage_file_id: item.file.id,
+          filename: item.file.name,
+          source: item.file.source as ContentSource,
+          type: expectedType,
+          source_path: item.file.sourcePath,
+          published: true,
+          style_ids: [...new Set([...item.styleIds, ...taggedIds])],
+        });
+        created += 1;
+      } catch (err) {
+        const message = userError(err);
+        if (/23505|duplicate key|already imported/i.test(message)) {
+          skippedDuringCreate += 1;
+          continue;
+        }
+        review.publishing = false;
+        review.progressText = `${created} posts imported before an error: ${message}`;
+        await render();
+        toast('Import stopped. Existing posts were kept; review the status before retrying.');
+        return;
+      }
+    }
+
+    state.importReview = null;
+    state.storageBrowser = null;
+    go('/admin/posts');
+    toast(`${created} post${created === 1 ? '' : 's'} imported${skipped + skippedDuringCreate ? ` · ${skipped + skippedDuringCreate} duplicate${skipped + skippedDuringCreate === 1 ? '' : 's'} skipped` : ''}.`);
+  } catch (err) {
+    review.publishing = false;
+    review.progressText = userError(err);
+    await render();
+    throw err;
+  }
 }
 async function handleAction(button: HTMLElement): Promise<void> {
   const action = button.dataset.action || '';
@@ -432,6 +928,126 @@ async function handleAction(button: HTMLElement): Promise<void> {
       }
       case 'comments': await openComments(id); break;
       case 'signout': await signOut(); state.user=null; state.profile=null; state.followed.clear(); state.followedStyles.clear(); go('/'); toast('You have signed out.'); break;
+      case 'profile-image-select':
+        if (!isAdmin()) throw new Error('Administrator access is required.');
+        await openStorageBrowser('profile', 'profile');
+        break;
+      case 'zsb-mode': {
+        const mode = button.dataset.mode;
+        if (mode !== 'gallery' && mode !== 'video') throw new Error('Choose a valid import type.');
+        if (!state.importModelId) throw new Error('Choose a creator before importing media.');
+        state.styles = list(await listStyles({ limit: 100, offset: 0 }));
+        await openStorageBrowser(mode, 'bulk');
+        break;
+      }
+      case 'zsb-folder-open': {
+        const browser = state.storageBrowser;
+        if (!browser) throw new Error('The ZeroStorage browser is no longer open.');
+        const folder = browser.folders.find((item) => item.id === id);
+        if (!folder) throw new Error('That folder is no longer available in this view.');
+        browser.stack.push(folder);
+        browser.page = 1;
+        await loadStorageBrowser(browser);
+        break;
+      }
+      case 'zsb-folder-toggle': {
+        const browser = state.storageBrowser;
+        if (!browser || browser.mode !== 'gallery') break;
+        const folder = browser.folders.find((item) => item.id === id);
+        if (!folder) throw new Error('That folder is no longer available in this view.');
+        const selected = browser.selectedFolders.findIndex((item) => item.id === id);
+        if (selected >= 0) browser.selectedFolders.splice(selected, 1);
+        else browser.selectedFolders.push({
+          ...folder,
+          sourcePath: `${currentStoragePath(browser)}/${folder.name}`,
+        });
+        await render();
+        break;
+      }
+      case 'zsb-file-toggle': {
+        const browser = state.storageBrowser;
+        if (!browser) throw new Error('The ZeroStorage browser is no longer open.');
+        const file = browser.files.find((item) => item.id === id);
+        if (!file || !fileIsSelectable(browser, file)) throw new Error('That file is not compatible with this import.');
+        const selected = browser.selectedFiles.findIndex((item) => item.id === id);
+        if (browser.mode === 'profile') {
+          browser.selectedFiles = [browserFile(browser, file)];
+        } else if (selected >= 0) {
+          browser.selectedFiles.splice(selected, 1);
+        } else {
+          browser.selectedFiles.push(browserFile(browser, file));
+        }
+        await render();
+        break;
+      }
+      case 'zsb-select-all': {
+        const browser = state.storageBrowser;
+        if (!browser || browser.mode !== 'gallery') break;
+        const compatible = browser.files.filter((file) => fileIsSelectable(browser, file));
+        const currentIds = new Set(compatible.map((file) => file.id));
+        const allSelected = compatible.length > 0 && compatible.every((file) =>
+          browser.selectedFiles.some((selected) => selected.id === file.id),
+        );
+        browser.selectedFiles = allSelected
+          ? browser.selectedFiles.filter((file) => !currentIds.has(file.id))
+          : [
+            ...browser.selectedFiles.filter((file) => !currentIds.has(file.id)),
+            ...compatible.map((file) => browserFile(browser, file)),
+          ];
+        await render();
+        break;
+      }
+      case 'zsb-back': {
+        const browser = state.storageBrowser;
+        if (browser?.stack.length) {
+          browser.stack.pop();
+          browser.page = 1;
+          await loadStorageBrowser(browser);
+        }
+        break;
+      }
+      case 'zsb-breadcrumb': {
+        const browser = state.storageBrowser;
+        if (!browser) break;
+        const index = Math.max(0, Number(button.dataset.index) || 0);
+        browser.stack = browser.stack.slice(0, index);
+        browser.page = 1;
+        await loadStorageBrowser(browser);
+        break;
+      }
+      case 'zsb-page': {
+        const browser = state.storageBrowser;
+        if (!browser) break;
+        const pages = Math.max(1, Math.ceil(browser.folderTotal / 100), Math.ceil(browser.fileTotal / 100));
+        browser.page = Math.max(1, Math.min(pages, Number(button.dataset.page) || 1));
+        await loadStorageBrowser(browser);
+        break;
+      }
+      case 'zsb-set': await prepareStorageReview(); break;
+      case 'zsb-cancel':
+        state.storageBrowser = null;
+        state.importReview = null;
+        await render();
+        break;
+      case 'import-back':
+        state.importReview = null;
+        await render();
+        break;
+      case 'import-cancel':
+        state.importReview = null;
+        state.storageBrowser = null;
+        await render();
+        break;
+      case 'import-style-toggle':
+        toggleReviewStyle(button.dataset.group || '', button.dataset.styleId || '');
+        await render();
+        break;
+      case 'style-inline-create':
+        await createReviewStyle(button.dataset.group || '');
+        break;
+      case 'import-publish':
+        await publishStorageImport();
+        break;
       case 'reset-password': {
         const email = window.prompt('Enter your account email to receive a reset link.');
         if (email) { await sendPasswordReset(email); toast('If that account exists, a reset link is on its way.'); }
@@ -454,21 +1070,6 @@ async function handleAction(button: HTMLElement): Promise<void> {
         const [models,styles]=await Promise.all([loadModels(),listStyles({limit:100,offset:0})]);
         state.styles=list(styles);
         state.modal='post-form'; state.modalData={edit:false,models,post:{source:'',type:'image'}}; await render(); break;
-      }
-      case 'post-create-selected': {
-        if (!state.selectedFile) throw new Error('Choose a ZeroStorage file first.');
-        const [models,styles]=await Promise.all([loadModels(),listStyles({limit:100,offset:0})]);
-        state.styles=list(styles);
-        const source=str(state.selectedFile,'source');
-        state.modal='post-form';
-        state.modalData={edit:false,models,post:{
-          zerostorage_file_id:str(state.selectedFile,'id'),
-          filename:str(state.selectedFile,'name'),
-          source,
-          source_path:str(state.selectedFile,'source_path'),
-          type:source==='wt'?'video':'image',
-        }};
-        await render(); break;
       }
       case 'post-edit': {
         const [post,models,styles]=await Promise.all([getPost(id),loadModels(),listStyles({limit:100,offset:0})]);
@@ -507,35 +1108,6 @@ async function handleAction(button: HTMLElement): Promise<void> {
       case 'comment-delete':
         if (window.confirm('Remove this comment?')) { await deleteComment(id); await openComments(state.modalData.postId); toast('Comment removed.'); }
         break;
-      case 'storage-load': await loadStorage(); break;
-      case 'storage-page':
-        state.storagePage=Math.max(1,state.storagePage+Number(button.dataset.direction||0));
-        await loadStorage(); break;
-      case 'folder-up':
-        state.folderStack.pop();
-        state.folderId=state.folderStack.at(-1)?.id||'';
-        state.folderPath=state.folderStack.map(folder=>folder.name).join('/');
-        state.storagePage=1; state.selectedFile=null; await loadStorage(); break;
-      case 'open-folder': {
-        const folderId=button.dataset.id||'';
-        const folderName=button.dataset.name||'Folder';
-        state.folderStack.push({id:folderId,name:folderName});
-        state.folderId=folderId;
-        state.folderPath=state.folderStack.map(folder=>folder.name).join('/');
-        state.storagePage=1; state.selectedFile=null; state.modalData.storageHtml='';
-        await loadStorage(); break;
-      }
-      case 'select-file': {
-        const source=sourceForPath(state.folderPath);
-        state.selectedFile={
-          id:button.dataset.id||'',
-          name:button.dataset.name||'',
-          type:button.dataset.type||'unknown',
-          source,
-          source_path:state.folderPath||null,
-        };
-        toast('File selected.'); await render(); break;
-      }
     }
   } catch (err) { actionError(err); }
 }
@@ -563,12 +1135,14 @@ async function handleSubmit(form: HTMLFormElement): Promise<void> {
     }
     if (kind==='model') {
       const id=val('id');
+      const profileFileId=val('profileFileId').trim();
       const input={
         name:val('name').trim(),
         username:val('username').trim() || null,
         slug:val('slug').trim(),
         description:val('bio').trim() || null,
-        profile_image_url:val('imageUrl').trim() || null,
+        profile_image_url:profileFileId ? null : val('imageUrl').trim() || null,
+        profile_image_zerostorage_file_id:profileFileId || null,
         published:fd.has('published'),
       };
       const saved = id ? await updateModel(id,input) : await createModel(input);
@@ -594,7 +1168,7 @@ async function handleSubmit(form: HTMLFormElement): Promise<void> {
       };
       if (id) await updatePost(id,input);
       else await createPost(input);
-      state.modal=''; state.modalData={}; state.selectedFile=null; toast(id?'Post updated.':'Post created.'); await render(); return;
+      state.modal=''; state.modalData={}; toast(id?'Post updated.':'Post created.'); await render(); return;
     }
     if (kind==='style') {
       await createStyle(val('name'));
@@ -668,15 +1242,34 @@ document.addEventListener('submit', e => {
   e.preventDefault(); void handleSubmit(form);
 });
 document.addEventListener('input', e => {
-  const input=e.target;
-  if (!(input instanceof HTMLInputElement) || !input.matches('[data-search]')) return;
-  state.search=input.value;
+  const target=e.target;
+  if (target instanceof HTMLTextAreaElement && target.dataset.action === 'import-caption') {
+    updateReviewCaption(target.dataset.group || '', target.value);
+    return;
+  }
+  if (!(target instanceof HTMLInputElement)) return;
+  if (target.name === 'imageUrl') {
+    const form=target.form;
+    const fileId=form?.querySelector<HTMLInputElement>('input[name="profileFileId"]');
+    if (fileId?.value) {
+      fileId.value='';
+      form?.querySelector('.profile-image-preview')?.remove();
+      form?.querySelector('.profile-storage-file-id')?.remove();
+    }
+  }
+  if (!target.matches('[data-search]')) return;
+  state.search=target.value;
   window.clearTimeout(searchTimer);
   searchTimer=window.setTimeout(()=>void render(),250);
 });
 document.addEventListener('change', e => {
   const select=e.target;
   if (!(select instanceof HTMLSelectElement)) return;
+  if (select.matches('[data-import-model]')) {
+    state.importModelId=select.value;
+    void render();
+    return;
+  }
   if (select.dataset.filter==='type') state.filterType=select.value;
   if (select.dataset.filter==='model') state.filterModel=select.value;
   if (select.dataset.filter==='type' && !['','image','video'].includes(state.filterType)) state.filterType='';
@@ -693,7 +1286,11 @@ document.addEventListener('keydown', e => {
     e.preventDefault();
     if (target.paused) void target.play().catch(()=>{}); else target.pause();
   }
-  if (e.key==='Escape' && state.modal) { state.modal=''; state.modalData={}; void render(); }
+  if (e.key==='Escape') {
+    if (state.importReview) { state.importReview=null; void render(); }
+    else if (state.storageBrowser) { state.storageBrowser=null; void render(); }
+    else if (state.modal) { state.modal=''; state.modalData={}; void render(); }
+  }
 });
 document.addEventListener('error', e => {
   const image=e.target;

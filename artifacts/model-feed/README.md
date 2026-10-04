@@ -27,7 +27,7 @@ The static site is written to `artifacts/model-feed/dist`.
 ## Supabase setup
 
 1. Create a Supabase project and enable email/password sign-in under **Authentication → Providers**.
-2. Apply the SQL files in `supabase/migrations/` in numeric order (`001_initial_schema.sql`, then `002_row_level_security.sql`) using the Supabase SQL Editor, or link the project and run `supabase db push` from `artifacts/model-feed`.
+2. Apply the SQL files in `supabase/migrations/` in numeric order (`001_initial_schema.sql`, `002_row_level_security.sql`, then `003_model_zerostorage_profile_image.sql`) using the Supabase SQL Editor, or link the project and run `supabase db push` from `artifacts/model-feed`.
 3. Add the local Vite settings to `.env.local`. The publishable key is intended for browser use; database access is restricted by the included row-level security policies.
 4. In **Authentication → URL Configuration**, set the local and deployed site URLs and allowed redirect URLs.
 5. After creating the account that should administer the catalog, promote its profile from the trusted SQL Editor using that account's Auth user UUID:
@@ -56,9 +56,13 @@ The Vite config embeds only the Supabase URL and publishable key. The ZeroStorag
 
 After setting environment variables, trigger a fresh deploy so the browser build receives the Supabase settings. The ZeroStorage function checks the caller's Supabase session and administrator role before forwarding folder/file listing requests.
 
-## Catalog rules and current scope
+## Catalog and ZeroStorage import rules
 
 - Each linked ZeroStorage file creates one post. The ZeroStorage file ID is the canonical unique media identity; the media URL is derived for display.
 - CTele and EB posts are images. WT posts are videos.
-- CSV/bulk import is intentionally not included; linking is manual, one file at a time.
+- Admins can browse only within `0RMCOIN/` from `/admin/import`; folders outside that root are never exposed by the browser.
+- Select a creator explicitly before importing. Gallery folders organize the review only; each selected image creates its own post. Videos create one post each and use filename `#tags` as styles.
+- Review captions and styles, create missing styles inline, skip already-imported ZeroStorage file IDs, and revalidate selected files before publishing.
+- No CSV import is supported. ZeroStorage media is never copied into another storage system or deleted by this app.
+- Model profile images can still use a manual URL or a single ZeroStorage image. ZeroStorage profile images are stored by file ID and displayed with the current image embed URL.
 - Models, styles, posts, follows, Likes, MMCs, and comments are stored in Supabase and protected by the included RLS policies.

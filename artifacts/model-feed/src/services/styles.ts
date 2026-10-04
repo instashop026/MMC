@@ -48,6 +48,10 @@ function normalizeStyle(name: string): { cleanName: string; slug: string } {
   return { cleanName, slug };
 }
 
+export function normalizeStyleSlug(name: string): string {
+  return normalizeStyle(name).slug;
+}
+
 function normalizedStyleName(name: string): string {
   return name
     .trim()

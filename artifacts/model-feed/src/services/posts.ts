@@ -10,7 +10,7 @@ import type {
 } from "../types/models";
 import { getSupabase } from "./supabase";
 import { postStats } from "./interactions";
-import { buildDownloadUrl } from "../lib/zerostorage-urls";
+import { buildImageEmbedUrl, buildVideoEmbedUrl } from "../lib/zerostorage-urls";
 
 export interface ListPostsOptions {
   limit: number;
@@ -20,6 +20,10 @@ export interface ListPostsOptions {
   search?: string;
   styleId?: string;
   postIds?: string[];
+}
+
+function mediaUrlForPost(fileId: string, type: MediaType): string {
+  return type === "video" ? buildVideoEmbedUrl(fileId) : buildImageEmbedUrl(fileId);
 }
 
 export async function findImportedFileIds(fileIds: string[]): Promise<Set<string>> {
@@ -113,7 +117,7 @@ export async function listPosts({
 
   return rows.map((row) => ({
     ...row,
-    media_url: buildDownloadUrl(row.zerostorage_file_id),
+    media_url: mediaUrlForPost(row.zerostorage_file_id, row.type),
     model: modelById.get(row.model_id),
     styles: stylesByPost.get(row.id) ?? [],
     like_count: stats.get(row.id)?.like_count ?? 0,
@@ -180,13 +184,17 @@ export async function createPost(input: PostInput): Promise<Post> {
       })),
     );
     if (styleError) {
-      throw new Error(`Post was linked, but its styles were not saved: ${styleError.message}`);
+      const { error: cleanupError } = await client.from("posts").delete().eq("id", data.id);
+      if (cleanupError) {
+        throw new Error(`Post ${data.id} was linked, but its styles were not saved and the post could not be removed: ${styleError.message}`);
+      }
+      throw new Error(`Post styles could not be saved, so the new post was removed: ${styleError.message}`);
     }
   }
 
   return {
     ...(data as Post),
-    media_url: buildDownloadUrl(fileId),
+    media_url: mediaUrlForPost(fileId, input.type),
     model: undefined,
     styles: [],
     like_count: 0,

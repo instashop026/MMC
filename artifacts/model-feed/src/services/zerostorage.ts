@@ -23,6 +23,8 @@ export interface ZeroStoragePage<T> {
   limit: number;
 }
 
+export const ZERO_STORAGE_APP_ROOT_NAME = "0RMCOIN";
+
 const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "avif", "bmp", "heic"]);
 const VIDEO_EXTENSIONS = new Set(["mp4", "mov", "m4v", "webm", "mkv", "avi", "wmv", "flv"]);
 
@@ -85,10 +87,141 @@ export async function listFiles(path?: string, page = 1): Promise<ZeroStoragePag
   return { ...result, items: result.items as ZeroFile[] };
 }
 
+async function listAllPages<T>(
+  load: (page: number) => Promise<ZeroStoragePage<T>>,
+): Promise<T[]> {
+  const first = await load(1);
+  const items = [...first.items];
+  const limit = Math.max(first.limit, first.items.length, 1);
+  const pageCount = Math.max(1, Math.ceil(first.total / limit));
+  for (let start = 2; start <= pageCount; start += 4) {
+    const pages = Array.from({ length: Math.min(4, pageCount - start + 1) }, (_, index) => start + index);
+    const results = await Promise.all(pages.map(load));
+    for (const result of results) items.push(...result.items);
+  }
+  return items;
+}
+
+export async function listAllFolders(folderId?: string): Promise<ZeroFolder[]> {
+  return listAllPages((page) => listFolders(folderId, page));
+}
+
+export async function listAllFiles(folderId?: string): Promise<ZeroFile[]> {
+  return listAllPages((page) => listFiles(folderId, page));
+}
+
+export async function findApplicationRootFolder(): Promise<ZeroFolder> {
+  const matches = (await listAllFolders()).filter(
+    (folder) => folder.name.trim().toLowerCase() === ZERO_STORAGE_APP_ROOT_NAME.toLowerCase(),
+  );
+  if (matches.length === 0) {
+    throw new Error(`The ZeroStorage folder ${ZERO_STORAGE_APP_ROOT_NAME} was not found at the storage root.`);
+  }
+  if (matches.length > 1) {
+    throw new Error(`More than one ${ZERO_STORAGE_APP_ROOT_NAME} folder exists at the storage root.`);
+  }
+  return matches[0];
+}
+
+export interface ZeroStorageSelectedFolder extends ZeroFolder {
+  sourcePath: string;
+}
+
+export interface ZeroStorageImportFile extends ZeroFile {
+  parentFolderId: string;
+  sourcePath: string;
+}
+
+export async function collectMediaUnderFolder(
+  selectedFolder: ZeroStorageSelectedFolder,
+  expectedType: MediaType,
+): Promise<ZeroStorageImportFile[]> {
+  const queue: ZeroStorageSelectedFolder[] = [selectedFolder];
+  const visited = new Set<string>();
+  const files: ZeroStorageImportFile[] = [];
+  let cursor = 0;
+
+  while (cursor < queue.length) {
+    const current = queue[cursor++];
+    if (!current.id || visited.has(current.id)) continue;
+    visited.add(current.id);
+
+    const [folderFiles, childFolders] = await Promise.all([
+      listAllFiles(current.id),
+      listAllFolders(current.id),
+    ]);
+    const source = sourceForPath(current.sourcePath);
+    const sourceMatches = expectedType === "image"
+      ? source === "ctele" || source === "eb"
+      : source === "wt";
+    if (sourceMatches) {
+      for (const file of folderFiles) {
+        if (file.type === expectedType) {
+          files.push({
+            ...file,
+            parentFolderId: current.id,
+            sourcePath: current.sourcePath,
+            source,
+          });
+        }
+      }
+    }
+
+    for (const folder of childFolders) {
+      queue.push({
+        ...folder,
+        sourcePath: `${current.sourcePath}/${folder.name}`,
+      });
+    }
+  }
+
+  return files.sort((a, b) => a.sourcePath.localeCompare(b.sourcePath) || a.name.localeCompare(b.name));
+}
+
+export async function revalidateZeroStorageFiles(
+  selectedFiles: ZeroStorageImportFile[],
+): Promise<{ available: ZeroStorageImportFile[]; missing: ZeroStorageImportFile[] }> {
+  const folders = new Map<string, ZeroStorageImportFile[]>();
+  for (const file of selectedFiles) {
+    const group = folders.get(file.parentFolderId) ?? [];
+    group.push(file);
+    folders.set(file.parentFolderId, group);
+  }
+
+  const availableById = new Map<string, ZeroFile>();
+  const folderIds = [...folders.keys()];
+  for (let start = 0; start < folderIds.length; start += 4) {
+    await Promise.all(folderIds.slice(start, start + 4).map(async (folderId) => {
+      const files = await listAllFiles(folderId);
+      for (const file of files) availableById.set(file.id, file);
+    }));
+  }
+
+  const available: ZeroStorageImportFile[] = [];
+  const missing: ZeroStorageImportFile[] = [];
+  for (const selected of selectedFiles) {
+    const current = availableById.get(selected.id);
+    if (!current) {
+      missing.push(selected);
+      continue;
+    }
+    available.push({
+      ...selected,
+      ...current,
+      parentFolderId: selected.parentFolderId,
+      sourcePath: selected.sourcePath,
+      source: sourceForPath(selected.sourcePath),
+    });
+  }
+  return { available, missing };
+}
+
 export function sourceForPath(path: string): ContentSource | null {
-  const root = path.split("/").filter(Boolean)[0]?.toLowerCase();
-  if (root === "ctele") return "ctele";
-  if (root === "eb") return "eb";
-  if (root === "wt") return "wt";
+  const segments = path.split("/").map((part) => part.trim()).filter(Boolean);
+  const appRootIndex = segments.findIndex((part) => part.toLowerCase() === ZERO_STORAGE_APP_ROOT_NAME.toLowerCase());
+  const source = (segments[appRootIndex >= 0 ? appRootIndex + 1 : 0] ?? "").toLowerCase();
+  if (source === "ctele") return "ctele";
+  if (source === "eb") return "eb";
+  if (source === "wt") return "wt";
   return null;
 }
