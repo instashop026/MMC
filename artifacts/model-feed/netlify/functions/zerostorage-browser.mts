@@ -55,22 +55,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * under payload.data. Normalize so callers always get the array or null.
  */
 function listFromPayload(payload: ZeroListResponse<unknown>, resource: Resource): unknown[] | null {
-  // Flat response: { folders: [...], files: [...], total, page, ... }
-  const flat = payload[resource];
-  if (Array.isArray(flat) && flat.length > 0) return flat;
-
-  // Nested under data: { data: { folders: [...], files: [...] } }
-  const nested = isRecord(payload.data) ? payload.data : null;
-  if (nested) {
-    const inner = nested[resource];
-    if (Array.isArray(inner) && inner.length > 0) return inner;
+  // ZeroStorage can return arrays flat or under data.*
+  const candidates: unknown[] = [];
+  const top = (payload as Record<string, unknown>)[resource];
+  if (Array.isArray(top)) candidates.push(top);
+  const data = isRecord(payload.data) ? payload.data : null;
+  if (data) {
+    const inner = data[resource];
+    if (Array.isArray(inner)) candidates.push(inner);
   }
-
-  // Fallback: items array at top level
-  const items = payload.items;
-  if (Array.isArray(items) && items.length > 0) return items;
-
-  return null;
+  const items = (payload as Record<string, unknown>)["items"];
+  if (Array.isArray(items)) candidates.push(items);
+  return candidates.find((a) => a.length > 0) ?? candidates[0] ?? null;
 }
 
 function numberFromPayload(payload: ZeroListResponse<unknown>, key: "total" | "page" | "limit"): number | undefined {
