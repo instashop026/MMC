@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 
-const ZERO_STORAGE_API = "https://upload.zerostorage.net/api";
+const ZERO_STORAGE_API = "https://test.zerostorage.net/api";
 
 type Resource = "folders" | "files";
 
@@ -178,15 +178,18 @@ export default async function handler(request: Request): Promise<Response> {
   const search = url.searchParams.get("search")?.trim().slice(0, 100);
 
   const upstreamUrl = new URL(
-    resource === "folders" ? `${ZERO_STORAGE_API}/folders` : `${ZERO_STORAGE_API}/files`,
+    resource === "folders"
+      ? `${ZERO_STORAGE_API}/folders`
+      : `${ZERO_STORAGE_API}/files/list`,
   );
-  if (resource === "folders") {
-    upstreamUrl.searchParams.set("parentId", folderId ?? "root");
+  if (resource === "folders" && folderId) {
+    upstreamUrl.searchParams.set("parentId", folderId);
   } else if (folderId) {
     upstreamUrl.searchParams.set("folderId", folderId);
   }
   upstreamUrl.searchParams.set("page", String(page));
   upstreamUrl.searchParams.set("limit", String(limit));
+  if (resource === "files") upstreamUrl.searchParams.set("sort", "newest");
   if (resource === "files" && search) upstreamUrl.searchParams.set("search", search);
 
   try {
