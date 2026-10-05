@@ -168,8 +168,9 @@ export default async function handler(request: Request): Promise<Response> {
     return json(400, { error: "Choose a valid ZeroStorage resource." });
   }
 
-  const folderId = safeFolderId(url.searchParams.get("folderId"));
-  if (folderId === undefined) return json(400, { error: "The folder ID is invalid." });
+  const folderIdParam = url.searchParams.get("folderId");
+  const normalizedFolderId = folderIdParam && folderIdParam !== "null" ? safeFolderId(folderIdParam) : null;
+  if (folderIdParam && !normalizedFolderId) return json(400, { error: "The folder ID is invalid." });
   const page = boundedInteger(url.searchParams.get("page"), 1, 100000);
   const limit = boundedInteger(url.searchParams.get("limit"), 50, 100);
   if (page === null || limit === null) {
@@ -182,10 +183,10 @@ export default async function handler(request: Request): Promise<Response> {
       ? `${ZERO_STORAGE_API}/folders`
       : `${ZERO_STORAGE_API}/files/list`,
   );
-  if (resource === "folders" && folderId) {
-    upstreamUrl.searchParams.set("parentId", folderId);
-  } else if (folderId) {
-    upstreamUrl.searchParams.set("folderId", folderId);
+  if (resource === "folders" && normalizedFolderId) {
+    upstreamUrl.searchParams.set("parentId", normalizedFolderId);
+  } else if (normalizedFolderId) {
+    upstreamUrl.searchParams.set("folderId", normalizedFolderId);
   }
   upstreamUrl.searchParams.set("page", String(page));
   upstreamUrl.searchParams.set("limit", String(limit));
