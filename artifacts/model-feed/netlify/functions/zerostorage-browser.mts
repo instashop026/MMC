@@ -22,6 +22,10 @@ interface ZeroListResponse<T> {
   total?: number;
   page?: number;
   limit?: number;
+  folders?: unknown;
+  files?: unknown;
+  items?: unknown;
+  data?: unknown;
 }
 
 const baseHeaders = {
@@ -47,31 +51,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function listFromPayload(payload: ZeroListResponse<unknown>, resource: Resource): unknown[] | null {
-  const data = payload.data;
-  const nested = isRecord(data) ? data : null;
   const candidates = [
     payload[resource],
-    nested?.[resource],
     payload.items,
-    nested?.items,
-    Array.isArray(data) ? data : undefined,
+    payload.data,
   ];
   const arrays = candidates.filter((candidate): candidate is unknown[] => Array.isArray(candidate));
   return arrays.find((items) => items.length > 0) ?? arrays[0] ?? null;
 }
 
 function numberFromPayload(payload: ZeroListResponse<unknown>, key: "total" | "page" | "limit"): number | undefined {
-  const nested = isRecord(payload.data) ? payload.data : null;
-  const value = payload[key] ?? nested?.[key];
+  const value = payload[key];
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function safeFolderId(value: string | null): string | null | undefined {
   if (!value) return null;
-  if (
-    value.length > 255
-    || !/^[A-Za-z0-9_-]+$/.test(value)
-  ) return undefined;
+  if (value.length > 255 || !/^[A-Za-z0-9_-]+$/.test(value)) return undefined;
   return value;
 }
 
