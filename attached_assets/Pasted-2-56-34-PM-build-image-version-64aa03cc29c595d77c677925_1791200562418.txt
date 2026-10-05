@@ -1,0 +1,131 @@
+2:56:34 PM: build-image version: 64aa03cc29c595d77c6779252fe8506d6078c0e0 (noble-new-builds)
+2:56:34 PM: buildbot version: 26380014651b415e377b346608b7cbcb0a3b56ce
+2:56:34 PM: Fetching cached dependencies
+2:56:34 PM: Failed to fetch cache, continuing with build
+2:56:34 PM: Starting to prepare the repo for build
+2:56:34 PM: No cached dependencies found. Cloning fresh repo
+2:56:34 PM: git clone --filter=blob:none https://github.com/instashop026/MMC
+2:56:35 PM: Preparing Git Reference refs/heads/main
+2:56:37 PM: Custom build path detected. Proceeding with the specified path: 'artifacts/model-feed'
+2:56:37 PM: Custom publish path detected. Proceeding with the specified path: 'artifacts/model-feed/dist'
+2:56:37 PM: Custom functions path detected. Proceeding with the specified path: 'artifacts/model-feed/netlify/functions'
+2:56:37 PM: Installing dependencies
+2:56:37 PM: mise by @jdx – installing 1 tool
+2:56:38 PM: mise ⇢ python@3.14.3  617ms · already installed
+2:56:38 PM: mise ████████████████ 1/1 · installed 0 tools · 1 already installed in 618ms
+2:56:38 PM: mise ~/.config/mise/config.toml tools: python@3.14.3
+2:56:38 PM: mise by @jdx – installing 1 tool
+2:56:38 PM: mise ⇢ ruby@3.4.8  34ms · already installed
+2:56:38 PM: mise ████████████████ 1/1 · installed 0 tools · 1 already installed in 35ms
+2:56:38 PM: mise ~/.config/mise/config.toml tools: ruby@3.4.8
+2:56:38 PM: mise by @jdx – installing 1 tool
+2:56:38 PM: mise ⇢ go@1.26.2  25ms · already installed
+2:56:38 PM: mise ████████████████ 1/1 · installed 0 tools · 1 already installed in 26ms
+2:56:38 PM: mise ~/.config/mise/config.toml tools: go@1.26.2
+2:56:39 PM: v24.21.0 is already installed.
+2:56:39 PM: Now using node v24.21.0 (npm v11.19.0)
+2:56:39 PM: Enabling Node.js Corepack
+2:56:40 PM: pnpm workspaces detected
+2:56:40 PM: Installing npm packages using pnpm version 10.30.3
+2:56:40 PM: Scope: all 9 workspace projects
+2:56:40 PM: ../..                                    | Progress: resolved 1, reused 0, downloaded 0, added 0
+2:56:40 PM: ../..                                    | +474 ++++++++++++++++++++++++++++++++
+2:56:41 PM: ../..                                    | Progress: resolved 474, reused 0, downloaded 231, added 146
+2:56:42 PM: ../..                                    | Progress: resolved 474, reused 0, downloaded 299, added 177
+2:56:43 PM: ../..                                    | Progress: resolved 474, reused 0, downloaded 474, added 297
+2:56:44 PM: ../..                                    | Progress: resolved 474, reused 0, downloaded 474, added 474, done
+2:56:44 PM: .../esbuild@0.28.2/node_modules/esbuild postinstall$ node install.js
+2:56:44 PM: .../esbuild@0.28.2/node_modules/esbuild postinstall: Done
+2:56:44 PM: dependencies:
+2:56:44 PM: + @supabase/supabase-js 2.117.2
+2:56:44 PM: devDependencies:
+2:56:44 PM: + @types/node 25.9.6
+2:56:44 PM: + typescript 5.9.3
+2:56:44 PM: + vite 7.3.6
+2:56:44 PM: ../.. preinstall$ sh -c 'rm -f package-lock.json yarn.lock; case "$npm_config_user_agent" in pnpm/*) ;; *) echo "Use pnpm instead" >&2; exit 1 ;; esac'
+2:56:44 PM: ../.. preinstall: Done
+2:56:44 PM: Done in 4.2s using pnpm v10.30.3
+2:56:44 PM: npm packages installed using pnpm
+2:56:45 PM: Successfully installed dependencies
+2:56:45 PM: Detected 1 framework(s)
+2:56:45 PM: "vite" at version "7.3.6"
+2:56:45 PM: Starting build script
+2:56:46 PM: Section completed: initializing
+2:56:47 PM: ​
+2:56:47 PM: Netlify Build                                                 
+2:56:47 PM: ────────────────────────────────────────────────────────────────
+2:56:47 PM: ​
+2:56:47 PM: ❯ Version
+2:56:47 PM:   @netlify/build 37.3.3
+2:56:47 PM: ​
+2:56:47 PM: ❯ Flags
+2:56:47 PM:   accountId: 6a25f9481415d03f35c3499a
+2:56:47 PM:   baseRelDir: true
+2:56:47 PM:   buildId: 6ac38969abc860528941a318
+2:56:47 PM:   deployId: 6ac38969abc860528941a31a
+2:56:47 PM:   packagePath: artifacts/mockup-sandbox
+2:56:47 PM: ​
+2:56:47 PM: ❯ Current directory
+2:56:47 PM:   /opt/build/repo/artifacts/model-feed
+2:56:47 PM: ​
+2:56:47 PM: ❯ Config file
+2:56:47 PM:   /opt/build/repo/netlify.toml
+2:56:47 PM: ​
+2:56:47 PM: ❯ Context
+2:56:47 PM:   production
+2:56:47 PM: ​
+2:56:47 PM: build.command from netlify.toml                               
+2:56:47 PM: ────────────────────────────────────────────────────────────────
+2:56:47 PM: ​
+2:56:47 PM: $ npm run build
+2:56:47 PM: > @workspace/model-feed@1.0.0 build
+2:56:47 PM: > tsc --noEmit -p tsconfig.json && vite build --config vite.config.ts
+2:56:49 PM: vite v7.3.6 building client environment for production...
+2:56:50 PM: transforming...
+2:56:50 PM: ✓ 59 modules transformed.
+2:56:50 PM: rendering chunks...
+2:56:50 PM: computing gzip size...
+2:56:50 PM: dist/index.html                   1.22 kB │ gzip:  0.49 kB
+2:56:50 PM: dist/assets/index-DyEBnjvR.css   37.19 kB │ gzip:  7.95 kB
+2:56:50 PM: dist/assets/index-CtnMmLtt.js   317.93 kB │ gzip: 83.54 kB
+2:56:50 PM: ✓ built in 871ms
+2:56:50 PM: ​
+2:56:50 PM: (build.command completed in 3s)
+2:56:50 PM: ​
+2:56:50 PM: Functions bundling                                            
+2:56:50 PM: ────────────────────────────────────────────────────────────────
+2:56:50 PM: ​
+2:56:50 PM: Packaging Functions from netlify/functions directory:
+2:56:50 PM:  - zerostorage-browser.mts
+2:56:50 PM: ​
+2:56:51 PM: ​
+2:56:51 PM: (Functions bundling completed in 587ms)
+2:56:51 PM: ​
+2:56:51 PM: Deploy site                                                   
+2:56:51 PM: ────────────────────────────────────────────────────────────────
+2:56:51 PM: ​
+2:56:51 PM: Starting to deploy site from 'artifacts/model-feed/dist'
+2:56:51 PM: Calculating files to upload
+2:56:51 PM: 4 new file(s) to upload
+2:56:51 PM: 1 new function(s) to upload
+2:56:55 PM: Section completed: deploying
+2:56:55 PM: Site deploy was successfully initiated
+2:56:55 PM: ​
+2:56:55 PM: (Deploy site completed in 4.5s)
+2:56:56 PM: Starting post processing
+2:56:56 PM: Skipping form detection
+2:56:56 PM: Post processing - header rules
+2:56:56 PM: Post processing - redirect rules
+2:56:56 PM: Post processing done
+2:56:56 PM: Section completed: postprocessing
+2:56:56 PM: ​
+2:56:56 PM: Netlify Build Complete                                        
+2:56:56 PM: ────────────────────────────────────────────────────────────────
+2:56:56 PM: ​
+2:56:56 PM: (Netlify Build completed in 8.3s)
+2:56:56 PM: Caching artifacts
+2:56:56 PM: Section completed: building
+2:56:57 PM: Site is live ✨
+2:56:57 PM: Uploading cache of size 45.9MB
+2:56:57 PM: Section completed: cleanup
+2:56:57 PM: Finished processing build request in 22.801s
