@@ -50,12 +50,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-/**
- * ZeroStorage responds either flat (folders/files at top level) or nested
- * under payload.data. Normalize so callers always get the array or null.
- */
 function listFromPayload(payload: ZeroListResponse<unknown>, resource: Resource): unknown[] | null {
-  // ZeroStorage can return arrays flat or under data.*
   const candidates: unknown[] = [];
   const top = (payload as Record<string, unknown>)[resource];
   if (Array.isArray(top)) candidates.push(top);
