@@ -50,19 +50,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+/**
+ * ZeroStorage responds either flat (folders/files at top level) or nested
+ * under payload.data. Normalize so callers always get the array or null.
+ */
 function listFromPayload(payload: ZeroListResponse<unknown>, resource: Resource): unknown[] | null {
-  const candidates = [
-    payload[resource],
-    payload.items,
-    payload.data,
-  ];
-  const arrays = candidates.filter((candidate): candidate is unknown[] => Array.isArray(candidate));
-  return arrays.find((items) => items.length > 0) ?? arrays[0] ?? null;
+  // Flat response: { folders: [...], files: [...], total, page, ... }
+  const flat = payload[resource];
+  if (Array.isArray(flat) && flat.length > 0) return flat;
+
+  // Nested under data: { data: { folders: [...], files: [...] } }
+  const nested = isRecord(payload.data) ? payload.data : null;
+  if (nested) {
+    const inner = nested[resource];
+    if (Array.isArray(inner) && inner.length > 0) return inner;
+  }
+
+  // Fallback: items array at top level
+  const items = payload.items;
+  if (Array.isArray(items) && items.length > 0) return items;
+
+  return null;
 }
 
 function numberFromPayload(payload: ZeroListResponse<unknown>, key: "total" | "page" | "limit"): number | undefined {
   const value = payload[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const nested = isRecord(payload.data) ? payload.data : null;
+  if (nested) {
+    const v = nested[key];
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+  }
+  return undefined;
 }
 
 function safeFolderId(value: string | null): string | null | undefined {
