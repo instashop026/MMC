@@ -668,6 +668,10 @@ async function prepareStorageReview(): Promise<void> {
     return;
   }
 
+  if (browser.mode !== 'gallery' && browser.mode !== 'video') {
+    throw new Error('Choose a gallery or video import before continuing.');
+  }
+
   const modelId = state.importModelId;
   if (!modelId) throw new Error('Choose a creator before browsing media.');
   const model = await getModelDetail(modelId);

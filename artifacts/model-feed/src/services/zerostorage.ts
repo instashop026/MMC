@@ -48,15 +48,23 @@ async function browse(
   const response = await fetch(`/.netlify/functions/zerostorage-browser?${params}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
+  const contentType = response.headers.get("content-type") ?? "";
+  if (/text\/html/i.test(contentType)) {
+    throw new Error("ZeroStorage is unavailable in this preview: the Netlify function returned the app page instead of a listing.");
+  }
   const result = (await response.json().catch(() => null)) as
     | { error?: string; folders?: ZeroFolder[]; files?: Array<Omit<ZeroFile, "type" | "source"> & { name: string }>; total?: number; page?: number; limit?: number }
     | null;
   if (!response.ok) {
     throw new Error(result?.error || `ZeroStorage request failed (${response.status}).`);
   }
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    throw new Error("ZeroStorage returned an invalid listing response.");
+  }
 
   if (resource === "folders") {
-    const folders = Array.isArray(result?.folders) ? result.folders : [];
+    if (!Array.isArray(result.folders)) throw new Error("ZeroStorage did not return a folder listing.");
+    const folders = result.folders;
     return {
       items: folders,
       total: result?.total ?? folders.length,
@@ -64,7 +72,8 @@ async function browse(
       limit: result?.limit ?? folders.length,
     };
   }
-  const files: ZeroFile[] = (result?.files ?? []).map((file) => ({
+  if (!Array.isArray(result.files)) throw new Error("ZeroStorage did not return a file listing.");
+  const files: ZeroFile[] = result.files.map((file) => ({
     ...file,
     type: getMediaType(file.name),
     source: null,

@@ -56,7 +56,8 @@ function listFromPayload(payload: ZeroListResponse<unknown>, resource: Resource)
     nested?.items,
     Array.isArray(data) ? data : undefined,
   ];
-  return candidates.find(Array.isArray) as unknown[] | undefined ?? null;
+  const arrays = candidates.filter((candidate): candidate is unknown[] => Array.isArray(candidate));
+  return arrays.find((items) => items.length > 0) ?? arrays[0] ?? null;
 }
 
 function numberFromPayload(payload: ZeroListResponse<unknown>, key: "total" | "page" | "limit"): number | undefined {
@@ -77,32 +78,32 @@ function safeFolderId(value: string | null): string | null | undefined {
 function readFolders(payload: ZeroListResponse<ZeroFolder>): ZeroFolder[] | null {
   const entries = listFromPayload(payload, "folders");
   if (!entries) return null;
-  return entries.flatMap((entry) => {
-    if (!entry || typeof entry !== "object") return [];
-    const folder = entry as Record<string, unknown>;
-    if (typeof folder.id !== "string" || typeof folder.name !== "string") return [];
-    return [{
-      id: folder.id.slice(0, 255),
-      name: folder.name.slice(0, 255),
-      ...(typeof folder.fileCount === "number" ? { fileCount: folder.fileCount } : {}),
-    }];
-  });
+  const folders: ZeroFolder[] = [];
+  for (const entry of entries) {
+    if (!isRecord(entry) || typeof entry.id !== "string" || typeof entry.name !== "string") return null;
+    folders.push({
+      id: entry.id.slice(0, 255),
+      name: entry.name.slice(0, 255),
+      ...(typeof entry.fileCount === "number" ? { fileCount: entry.fileCount } : {}),
+    });
+  }
+  return folders;
 }
 
 function readFiles(payload: ZeroListResponse<ZeroFile>): ZeroFile[] | null {
   const entries = listFromPayload(payload, "files");
   if (!entries) return null;
-  return entries.flatMap((entry) => {
-    if (!entry || typeof entry !== "object") return [];
-    const file = entry as Record<string, unknown>;
-    if (typeof file.id !== "string" || typeof file.name !== "string") return [];
-    return [{
-      id: file.id.slice(0, 255),
-      name: file.name.slice(0, 255),
-      ...(typeof file.size === "number" && Number.isFinite(file.size) ? { size: file.size } : {}),
-      ...(typeof file.createdAt === "string" ? { createdAt: file.createdAt.slice(0, 64) } : {}),
-    }];
-  });
+  const files: ZeroFile[] = [];
+  for (const entry of entries) {
+    if (!isRecord(entry) || typeof entry.id !== "string" || typeof entry.name !== "string") return null;
+    files.push({
+      id: entry.id.slice(0, 255),
+      name: entry.name.slice(0, 255),
+      ...(typeof entry.size === "number" && Number.isFinite(entry.size) ? { size: entry.size } : {}),
+      ...(typeof entry.createdAt === "string" ? { createdAt: entry.createdAt.slice(0, 64) } : {}),
+    });
+  }
+  return files;
 }
 
 async function authorizeAdmin(request: Request): Promise<
@@ -152,7 +153,7 @@ export default async function handler(request: Request): Promise<Response> {
   }
 
   const authorization = await authorizeAdmin(request);
-  if (!authorization.ok) {
+  if (authorization.ok === false) {
     return json(authorization.status, { error: authorization.message });
   }
 
