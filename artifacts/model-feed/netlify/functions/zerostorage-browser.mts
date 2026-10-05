@@ -61,7 +61,10 @@ function listFromPayload(payload: ZeroListResponse<unknown>, resource: Resource)
   }
   const items = (payload as Record<string, unknown>)["items"];
   if (Array.isArray(items)) candidates.push(items);
-  return candidates.find((a) => a.length > 0) ?? candidates[0] ?? null;
+  for (const a of candidates) {
+    if (Array.isArray(a) && a.length > 0) return a;
+  }
+  return (candidates[0] as unknown[] | null);
 }
 
 function numberFromPayload(payload: ZeroListResponse<unknown>, key: "total" | "page" | "limit"): number | undefined {
