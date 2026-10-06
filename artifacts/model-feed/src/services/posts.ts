@@ -10,7 +10,7 @@ import type {
 } from "../types/models";
 import { getSupabase } from "./supabase";
 import { postStats } from "./interactions";
-import { buildImageEmbedUrl, buildVideoEmbedUrl } from "../lib/zerostorage-urls";
+import { buildImageEmbedUrl, buildVideoEmbedUrl, buildDownloadUrl } from "../lib/zerostorage-urls";
 
 export interface ListPostsOptions {
   limit: number;

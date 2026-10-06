@@ -27,7 +27,7 @@ import {
 import type {
   ImportReviewGroup, ImportReviewVideo, ImportReviewState, ZeroStorageBrowserState,
 } from './components/admin-views';
-import { buildImageEmbedUrl, buildVideoEmbedUrl } from './lib/zerostorage-urls';
+import { buildImageEmbedUrl, buildVideoEmbedUrl, buildDownloadUrl } from './lib/zerostorage-urls';
 import { captionFromFilename, styleTagsFromFilename } from './lib/import-metadata';
 import type { ContentSource, MediaType } from './types/models';
 
