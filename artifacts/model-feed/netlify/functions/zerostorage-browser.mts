@@ -15,6 +15,8 @@ interface ZeroFile {
   name: string;
   size?: number;
   createdAt?: string;
+  type?: "image" | "video" | "unknown";
+  source?: string | null;
 }
 
 interface ZeroListResponse<T> {
@@ -90,13 +92,29 @@ function readFolders(payload: ZeroListResponse<ZeroFolder>): ZeroFolder[] | null
   const folders: ZeroFolder[] = [];
   for (const entry of entries) {
     if (!isRecord(entry) || typeof entry.id !== "string" || typeof entry.name !== "string") return null;
+    const fileCount = typeof entry._count === "object" && entry._count !== null && typeof (entry._count as any)?.files === "number"
+      ? (entry._count as any).files
+      : undefined;
     folders.push({
       id: entry.id.slice(0, 255),
       name: entry.name.slice(0, 255),
-      ...(typeof entry.fileCount === "number" ? { fileCount: entry.fileCount } : {}),
+      ...(typeof fileCount === "number" && Number.isFinite(fileCount) ? { fileCount } : {}),
     });
   }
   return folders;
+}
+
+function getMediaType(fileType: unknown, filename: string): "image" | "video" | "unknown" {
+  if (typeof fileType === "string") {
+    if (fileType.startsWith("image/")) return "image";
+    if (fileType.startsWith("video/")) return "video";
+  }
+  const ext = String(filename).split(".").pop()?.toLowerCase() ?? "";
+  const imageExts = new Set(["jpg", "jpeg", "png", "gif", "webp", "avif", "bmp", "heic"]);
+  const videoExts = new Set(["mp4", "mov", "m4v", "webm", "mkv", "avi", "wmv", "flv"]);
+  if (imageExts.has(ext)) return "image";
+  if (videoExts.has(ext)) return "video";
+  return "unknown";
 }
 
 function readFiles(payload: ZeroListResponse<ZeroFile>): ZeroFile[] | null {
@@ -104,12 +122,18 @@ function readFiles(payload: ZeroListResponse<ZeroFile>): ZeroFile[] | null {
   if (!entries) return null;
   const files: ZeroFile[] = [];
   for (const entry of entries) {
-    if (!isRecord(entry) || typeof entry.id !== "string" || typeof entry.name !== "string") return null;
+    if (!isRecord(entry)) return null;
+    if (typeof entry.id !== "string") return null;
+    const filename = typeof entry.filename === "string" ? entry.filename : entry.name;
+    if (typeof filename !== "string") return null;
+    const fileType = getMediaType(entry.file_type, filename);
     files.push({
       id: entry.id.slice(0, 255),
-      name: entry.name.slice(0, 255),
-      ...(typeof entry.size === "number" && Number.isFinite(entry.size) ? { size: entry.size } : {}),
-      ...(typeof entry.createdAt === "string" ? { createdAt: entry.createdAt.slice(0, 64) } : {}),
+      name: filename.slice(0, 255),
+      ...(typeof entry.file_size === "number" && Number.isFinite(entry.file_size) ? { size: entry.file_size } : {}),
+      ...(typeof entry.created_at === "string" ? { createdAt: entry.created_at.slice(0, 64) } : {}),
+      type: fileType,
+      source: null,
     });
   }
   return files;
@@ -190,7 +214,7 @@ export default async function handler(request: Request): Promise<Response> {
   const upstreamUrl = new URL(
     resource === "folders"
       ? `${ZERO_STORAGE_API}/folders`
-      : `${ZERO_STORAGE_API}/files/list`,
+      : `${ZERO_STORAGE_API}/files`,
   );
   if (resource === "folders" && normalizedFolderId) {
     upstreamUrl.searchParams.set("parentId", normalizedFolderId);
