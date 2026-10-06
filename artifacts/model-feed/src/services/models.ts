@@ -2,6 +2,7 @@ import type { Model, ModelDetail, ModelInput, Post, Style } from "../types/model
 import { getSupabase } from "./supabase";
 import { listPosts } from "./posts";
 import { getFollowedModelIds } from "./follows";
+import { buildDownloadUrl } from "../lib/zerostorage-urls";
 
 type PageOptions = { search?: string; limit?: number; offset?: number };
 
@@ -95,7 +96,7 @@ export async function createModel(input: ModelInput): Promise<Model> {
     slug: input.slug.trim(),
     description: input.description?.trim() || null,
     profile_image_url: profileFileId
-      ? null
+      ? buildDownloadUrl(profileFileId)
       : input.profile_image_url?.trim() || null,
     profile_image_zerostorage_file_id: profileFileId,
     published: input.published,

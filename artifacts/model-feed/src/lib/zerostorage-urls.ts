@@ -9,7 +9,7 @@ function encodeFileId(fileId: string): string {
 }
 
 export function buildImageEmbedUrl(fileId: string): string {
-  return `${ZERO_STORAGE_ORIGIN}/embed/image/${encodeFileId(fileId)}`;
+  return `${ZERO_STORAGE_ORIGIN}/api/files/download/${encodeFileId(fileId)}?track=true`;
 }
 
 export function buildVideoEmbedUrl(fileId: string): string {

@@ -146,20 +146,14 @@ export async function collectMediaUnderFolder(
       listAllFiles(current.id),
       listAllFolders(current.id),
     ]);
-    const source = sourceForPath(current.sourcePath);
-    const sourceMatches = expectedType === "image"
-      ? source === "ctele" || source === "eb"
-      : source === "wt";
-    if (sourceMatches) {
-      for (const file of folderFiles) {
-        if (file.type === expectedType) {
-          files.push({
-            ...file,
-            parentFolderId: current.id,
-            sourcePath: current.sourcePath,
-            source,
-          });
-        }
+    for (const file of folderFiles) {
+      if (file.type === expectedType) {
+        files.push({
+          ...file,
+          parentFolderId: current.id,
+          sourcePath: current.sourcePath,
+          source: sourceForPath(current.sourcePath),
+        });
       }
     }
 

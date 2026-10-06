@@ -23,7 +23,7 @@ export interface ListPostsOptions {
 }
 
 function mediaUrlForPost(fileId: string, type: MediaType): string {
-  return type === "video" ? buildVideoEmbedUrl(fileId) : buildImageEmbedUrl(fileId);
+  return type === "video" ? buildVideoEmbedUrl(fileId) : buildDownloadUrl(fileId);
 }
 
 export async function findImportedFileIds(fileIds: string[]): Promise<Set<string>> {

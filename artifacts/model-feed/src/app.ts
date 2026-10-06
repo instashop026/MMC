@@ -122,11 +122,11 @@ function mediaUrl(o: unknown): string {
   if (direct) return direct;
   const fileId = str(o, 'zerostorage_file_id', 'zerostorageFileId');
   if (!fileId) return '';
-  return isVideo(o) ? buildVideoEmbedUrl(fileId) : buildImageEmbedUrl(fileId);
+  return isVideo(o) ? buildVideoEmbedUrl(fileId) : buildDownloadUrl(fileId);
 }
 function modelImageUrl(o: unknown): string {
   const fileId = str(o, 'profile_image_zerostorage_file_id', 'profileImageZeroStorageFileId');
-  if (fileId) return buildImageEmbedUrl(fileId);
+  if (fileId) return buildDownloadUrl(fileId);
   return str(o, 'profile_image_url', 'profileImageUrl', 'cover_url', 'coverUrl', 'avatar_url', 'avatarUrl', 'image_url', 'imageUrl');
 }
 function isVideo(o: unknown): boolean {
@@ -205,10 +205,10 @@ function postCard(p: AnyRecord): string {
   const likes = num(p, 'like_count', 'likeCount', 'likes_count');
   const mmcs = num(p, 'mmc_count', 'mmcCount');
   const mediaHtml = media ? (isVideo(p)
-    ? `<video data-feed-video muted playsinline preload="none" tabindex="0" data-src="${esc(media)}" aria-label="Video by ${esc(title)}. Activate to pause or play."></video><button class="media-count" data-fullscreen="${esc(media)}" data-kind="video" aria-label="Open video fullscreen">Open</button>`
+    ? `<video data-feed-video muted playsinline preload="none" tabindex="0" data-src="${esc(media)}" aria-label="Video by ${esc(title)}. Activate to pause or play."></video>`
     : `<img loading="lazy" src="${esc(media)}" alt="${esc(str(p, 'alt_text', 'altText') || `Post by ${title}`)}" data-fullscreen="${esc(media)}" data-kind="image" role="button" tabindex="0" aria-label="Open image fullscreen">`)
     : `<div class="media-placeholder"><span>Media unavailable</span></div>`;
-  return `<article class="post-card" data-post-card="${esc(id)}"><div class="post-meta"><a class="avatar" href="/models/${esc(slug)}" data-go="/models/${esc(slug)}" aria-label="${esc(title)}">${esc(title.trim().slice(0,1).toUpperCase())}</a><div><a class="meta-name" href="/models/${esc(slug)}" data-go="/models/${esc(slug)}">${esc(title)}</a><div class="meta-sub">${esc(dateText(str(p, 'created_at', 'createdAt', 'published_at', 'publishedAt')) || 'Recently added')}</div></div><span class="meta-spacer"></span>${str(p, 'type') ? `<span class="chip">${esc(str(p, 'type'))}</span>` : ''}</div><div class="media-frame">${mediaHtml}</div>${postCaption(p) ? `<div class="post-copy"><p>${esc(postCaption(p))}</p></div>` : ''}<div class="post-actions"><button class="action ${activeLike ? 'active-like' : ''}" data-action="like" data-id="${esc(id)}" aria-pressed="${activeLike}">${icon('heart')}<span class="count">${likes || ''}</span><span>Like</span></button><button class="action ${activeMmc ? 'active-mmc' : ''}" data-action="mmc" data-id="${esc(id)}" aria-pressed="${activeMmc}"><span aria-hidden="true">MMC</span><span class="count">${mmcs || ''}</span></button><button class="action" data-action="comments" data-id="${esc(id)}">${icon('comment')}<span>${comments || 'Comment'}</span></button><span class="meta-spacer"></span><button class="plain-button small" data-go="/post/${esc(id)}">View</button></div></article>`;
+  return `<article class="post-card" data-post-card="${esc(id)}"><div class="post-meta"><a class="avatar" href="/models/${esc(slug)}" data-go="/models/${esc(slug)}" aria-label="${esc(title)}">${esc(title.trim().slice(0,1).toUpperCase())}</a><div><a class="meta-name" href="/models/${esc(slug)}" data-go="/models/${esc(slug)}">${esc(title)}</a><div class="meta-sub">${esc(dateText(str(p, 'created_at', 'createdAt', 'published_at', 'publishedAt')) || 'Recently added')}</div></div><span class="meta-spacer"></span>${str(p, 'type') ? `<span class="chip">${esc(str(p, 'type'))}</span>` : ''}</div><div class="media-frame">${mediaHtml}</div>${postCaption(p) ? `<div class="post-copy"><p>${esc(postCaption(p))}</p></div>` : ''}<div class="post-actions"><button class="action ${activeLike ? 'active-like' : ''}" data-action="like" data-id="${esc(id)}" aria-pressed="${activeLike}">${icon('heart')}<span class="count">${likes || ''}</span><span>Like</span></button><button class="action ${activeMmc ? 'active-mmc' : ''}" data-action="mmc" data-id="${esc(id)}" aria-pressed="${activeMmc}"><span aria-hidden="true">MMC</span><span class="count">${mmcs || ''}</span></button><button class="action" data-action="comments" data-id="${esc(id)}">${icon('comment')}<span>${comments || 'Comment'}</span></button><span class="meta-spacer"></span></div></article>`;
 }
 function modelCard(m: AnyRecord): string {
   const name = modelName(m), slug = modelSlug(m);
@@ -227,7 +227,7 @@ async function loadModels(search = '', limit = 60): Promise<AnyRecord[]> {
   return list(await listModels({ search: search || undefined, limit, offset: 0 }));
 }
 async function pageFeed(): Promise<string> {
-  const posts = publicPosts(await loadPosts({ limit: 30, offset: 0, search: state.search || undefined }));
+  const posts = publicPosts(await loadPosts({ limit: 1000, offset: 0, search: state.search || undefined }));
   return `${heading('A closer look', 'The feed', 'Recent work from across the creator community.')}${searchField('Search the feed')}<div class="feed">${posts.length ? posts.map(postCard).join('') : stateBlock('empty', 'New posts will appear here.')}</div>`;
 }
 async function pageExplore(): Promise<string> {
@@ -245,7 +245,7 @@ async function pageModel(slug: string): Promise<string> {
   const model = await getModelDetail(slug);
   if (!model) throw new Error('This creator profile could not be found.');
   if (!isAdmin() && hasAny(model,'published','is_published','isPublished') && !bool(model,'published','is_published','isPublished')) throw new Error('This creator profile is not available.');
-  const id = idOf(model), posts = publicPosts(await loadPosts({limit:30,offset:0,modelId:id}));
+  const id = idOf(model), posts = publicPosts(await loadPosts({limit:1000,offset:0,modelId:id}));
   const name = modelName(model), followed = state.followed.has(id) || bool(model,'is_following','isFollowing','following');
   const image = modelImageUrl(model);
   const styles = Array.isArray(model.styles) ? model.styles as AnyRecord[] : [];
@@ -348,7 +348,7 @@ function modalMarkup(): string {
        styleIds: draft.styleIds ?? [],
      };
      const profileFileId = str(m,'profile_image_zerostorage_file_id');
-     const profilePreview = profileFileId ? buildImageEmbedUrl(profileFileId) : str(m,'profile_image_url');
+     const profilePreview = profileFileId ? buildDownloadUrl(profileFileId) : str(m,'profile_image_url');
       return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="modal-head"><h2 id="dialog-title">${d.edit?'Edit model':'New model'}</h2><button class="icon-button" data-action="close-modal" aria-label="Close">${icon('close')}</button></div><form data-form="model"><input type="hidden" name="id" value="${esc(idOf(m))}"><div class="field"><label for="m-name">Display name</label><input id="m-name" name="name" required value="${esc(str(m,'display_name','displayName','name'))}"></div><div class="field"><label for="m-username">Username (optional)</label><input id="m-username" name="username" value="${esc(str(m,'username'))}"></div><div class="field"><label for="m-slug">Slug</label><input id="m-slug" name="slug" required value="${esc(str(m,'slug'))}"></div><div class="field"><label for="m-bio">Bio</label><textarea id="m-bio" name="bio">${esc(str(m,'bio','description'))}</textarea></div><div class="field"><label for="m-cover">Profile image URL</label><input id="m-cover" name="imageUrl" type="url" value="${esc(str(m,'profile_image_url','profileImageUrl'))}"><input type="hidden" name="profileFileId" value="${esc(profileFileId)}"><button type="button" class="btn btn-outline btn-small" data-action="profile-image-select">Choose a single image from ZeroStorage</button>${profilePreview ? `<img class="profile-image-preview" src="${esc(profilePreview)}" alt="Profile image preview">` : ''}${profileFileId ? `<small class="muted profile-storage-file-id">ZeroStorage file ID: ${esc(profileFileId)}</small>` : ''}</div><div class="field"><label><input type="checkbox" name="published" ${bool(m,'published','is_published','isPublished')?'checked':''}> Published</label></div><div class="field"><label>Styles</label><div class="chips">${state.styles.map((st:AnyRecord)=>`<label class="chip"><input type="checkbox" name="styleIds" value="${esc(idOf(st))}" ${((Array.isArray(m.styles)&&m.styles.some((x:AnyRecord)=>idOf(x)===idOf(st)))||(Array.isArray(m.style_ids)&&m.style_ids.includes(idOf(st)))||(Array.isArray(m.styleIds)&&m.styleIds.includes(idOf(st))))?'checked':''}> ${esc(str(st,'name','title'))}</label>`).join('') || '<span class="muted small">Add styles first to attach them to a model.</span>'}</div></div><button class="btn btn-gold btn-block" type="submit">${d.edit?'Save changes':'Create model'}</button></form></section></div>`;
   }
   if (state.modal === 'post-form') {
@@ -405,7 +405,7 @@ function adminOverlayMarkup(): string {
           ? source === null || source === 'ctele' || source === 'eb'
           : file.type === 'video' && (source === null || source === 'wt')
         : browser.mode === 'gallery'
-          ? file.type === 'image' && (source === 'ctele' || source === 'eb')
+          ? file.type === 'image' && (source === null || source === 'ctele' || source === 'eb')
           : file.type === 'video' && source === 'wt',
   }));
   const view: ZeroStorageBrowserState = {
@@ -706,7 +706,7 @@ async function prepareStorageReview(): Promise<void> {
     const directByParent = new Map<string, ZeroStorageImportFile[]>();
     for (const selected of browser.selectedFiles) {
       const file = selected;
-      if (file.type !== 'image' || (file.source !== 'ctele' && file.source !== 'eb')) {
+      if (file.type !== 'image') {
         throw new Error(`“${file.name}” is not a CTele or EB image.`);
       }
       if (assigned.has(file.id)) continue;
@@ -796,7 +796,7 @@ function fileIsSelectable(browser: StorageBrowserSession, file: ZeroFile): boole
       ? source === null || source === 'ctele' || source === 'eb'
       : file.type === 'video' && (source === null || source === 'wt');
   }
-  if (browser.mode === 'gallery') return file.type === 'image' && (source === 'ctele' || source === 'eb');
+  if (browser.mode === 'gallery') return file.type === 'image';
   return file.type === 'video' && source === 'wt';
 }
 
@@ -846,7 +846,7 @@ async function publishStorageImport(): Promise<void> {
       throw new Error('That image is no longer available. Choose another profile image.');
     }
     const draft = state.modalData.draft ?? {};
-    state.modalData.draft = { ...draft, profileFileId: checked.available[0].id, imageUrl: '' };
+    state.modalData.draft = { ...draft, profileFileId: checked.available[0].id, imageUrl: buildDownloadUrl(checked.available[0].id) };
     state.importReview = null;
     state.storageBrowser = null;
     await render();
