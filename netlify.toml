@@ -11,3 +11,9 @@
   from = "/*"
   to = "/index.html"
   status = 200
+
+# Netlify Secret Scanning — only these public Supabase client config values
+# are intentionally embedded in the browser bundle. The real secrets
+# (SUPABASE_SERVICE_ROLE_KEY, ZEROSTORAGE_API_KEY) are still protected.
+[build.environment]
+  SECRETS_SCAN_OMIT_KEYS = "SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY"
