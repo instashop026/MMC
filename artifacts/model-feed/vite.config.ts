@@ -1,21 +1,19 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineConfig, loadEnv } from "vite";
+import { defineConfig } from "vite";
 
 const rootDir = dirname(fileURLToPath(import.meta.url));
-const port = Number(process.env.PORT || 5173);
 
+// Use only environment variables set at build time (Netlify provides these).
+// Never use loadEnv() which reads .env files (which may contain secrets committed to git).
 export default defineConfig(({ mode }) => {
-  // Only the Supabase URL and publishable key are embedded in the browser.
-  // Never map SUPABASE_SERVICE_ROLE_KEY or other server credentials here.
-  const env = loadEnv(mode, rootDir, "");
   return {
     root: rootDir,
     base: process.env.BASE_PATH || "/",
     define: {
-      "import.meta.env.VITE_SUPABASE_URL": JSON.stringify(env.SUPABASE_URL || env.VITE_SUPABASE_URL || ""),
+      "import.meta.env.VITE_SUPABASE_URL": JSON.stringify(process.env.SUPABASE_URL || ""),
       "import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY": JSON.stringify(
-        env.SUPABASE_PUBLISHABLE_KEY || env.VITE_SUPABASE_PUBLISHABLE_KEY || "",
+        process.env.SUPABASE_PUBLISHABLE_KEY || ""
       ),
     },
     build: {
@@ -24,14 +22,14 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       host: "0.0.0.0",
-      port,
+      port: Number(process.env.PORT || 5173),
       strictPort: true,
       allowedHosts: true,
       fs: { strict: true },
     },
     preview: {
       host: "0.0.0.0",
-      port,
+      port: Number(process.env.PORT || 5173),
       allowedHosts: true,
     },
   };
