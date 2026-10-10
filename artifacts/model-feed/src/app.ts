@@ -8,9 +8,9 @@ import {
   toggleFollow, getFollowedModelIds, toggleStyleFollow, getFollowedStyleIds, listFollowedStyles,
 } from './services/follows';
 import {
-  listPosts, getPost, createPost, updatePost, deletePost, listComments, createComment, deleteComment, findImportedFileIds,
+  listPosts, getPost, createPost, updatePost, deletePost, listComments, createComment, deleteComment, findImportedFileIds, listSavedPosts,
 } from './services/posts';
-import { toggleLike, toggleMMC } from './services/interactions';
+import { toggleLike, toggleMMC, toggleSave, getSavedPostIds } from './services/interactions';
 import {
   listStyles, getStyleDetail, createStyle, updateStyle, deleteStyle, findOrCreateStyle, normalizeStyleSlug,
 } from './services/styles';
@@ -18,6 +18,7 @@ import {
   collectMediaUnderFolder, listFiles, listFolders,
   revalidateZeroStorageFiles, sourceForPath,
 } from './services/zerostorage';
+import { getSupabase } from './services/supabase';
 import type {
   ZeroFile, ZeroFolder, ZeroStorageImportFile, ZeroStorageSelectedFolder,
 } from './services/zerostorage';
@@ -27,7 +28,7 @@ import {
 import type {
   ImportReviewGroup, ImportReviewVideo, ImportReviewState, ZeroStorageBrowserState,
 } from './components/admin-views';
-import { buildImageEmbedUrl, buildVideoEmbedUrl, buildDownloadUrl } from './lib/zerostorage-urls';
+import { buildDownloadUrl } from './lib/zerostorage-urls';
 import { captionFromFilename, styleTagsFromFilename } from './lib/import-metadata';
 import type { ContentSource, MediaType } from './types/models';
 
@@ -65,11 +66,13 @@ const state: {
   followed: Set<string>; followedStyles: Set<string>; modal: string; modalData: AnyRecord;
   error: string; toastTimer?: number; styles: AnyRecord[]; generation: number;
   importModelId: string; storageBrowser: StorageBrowserSession | null; importReview: ImportReviewDraft | null;
+  posts: AnyRecord[];
+  viewer: { posts: AnyRecord[]; index: number } | null;
 } = {
   user: null, profile: null, route: parseRoute(), search: '', filterType: '', filterModel: '',
   followed: new Set(), followedStyles: new Set(), modal: '', modalData: {}, error: '',
   styles: [], generation: 0,
-  importModelId: '', storageBrowser: null, importReview: null,
+  importModelId: '', storageBrowser: null, importReview: null, posts: [], viewer: null,
 };
 
 const root = document.querySelector<HTMLElement>('#root');
@@ -122,7 +125,7 @@ function mediaUrl(o: unknown): string {
   if (direct) return direct;
   const fileId = str(o, 'zerostorage_file_id', 'zerostorageFileId');
   if (!fileId) return '';
-  return isVideo(o) ? buildVideoEmbedUrl(fileId) : buildDownloadUrl(fileId);
+  return isVideo(o) ? buildDownloadUrl(fileId) : buildDownloadUrl(fileId);
 }
 function modelImageUrl(o: unknown): string {
   const fileId = str(o, 'profile_image_zerostorage_file_id', 'profileImageZeroStorageFileId');
@@ -141,8 +144,15 @@ function icon(name: string): string {
     profile: '<circle cx="12" cy="8" r="4"/><path d="M5 21a7 7 0 0 1 14 0"/>',
     heart: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.8-7.5 1.1-1.1a5.5 5.5 0 0 0-.1-7.8z"/>',
     comment: '<path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8z"/>',
-    close: '<path d="m18 6-12 12M6 6l12 12"/>',
-    back: '<path d="m15 18-6-6 6-6"/>',
+    heartFill: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.8-7.5 1.1-1.1a5.5 5.5 0 0 0-.1-7.8z"/>',
+    bookmark: '<path d="M4 4v20l8-6 8 6V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2z"/>',
+    bookmarkFill: '<path d="M4 4v20l8-6 8 6V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2z" fill="currentColor" stroke="none"/>',
+    mmc: '<path d="M12 2l3 6h6l-4.5 4 1.5 6L12 16l-6 4 1.5-6L3 8h6z"/>',
+    volume: '<path d="M3 10v4h5l7 5V5L8 10z"/><path d="M15.5 12c0-.7-.2-1.4-.5-2l2-2a6 6 0 0 1 0 7.9l-2-2z"/>',
+    volumeOff: '<path d="M3 10v4h5l7 5V5L8 10z"/><line x1="1" y1="1" x2="23" y2="23"/>',
+    fullscreen: '<path d="M8 3t0 4m-4 0H0M4 7l-4 4 4 4m-4-4h4m12-8h4m-4 0v4m0-4l4 4-4 4m0-4V3"/>',
+    back: '<path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/>',
+    close: '<line x1="18" y1="6" x2="18" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
   };
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || ''}</svg>`;
 }
@@ -183,10 +193,58 @@ function navItem(path: string, label: string, ico: string): string {
   const active = state.route.path === path || (path !== '/' && state.route.path.startsWith(path));
   return `<button class="nav-item ${active ? 'active' : ''}" data-go="${path}" aria-label="${label}" ${active ? 'aria-current="page"' : ''}>${icon(ico)}<span>${label}</span></button>`;
 }
+function viewerMarkup(): string {
+  if (!state.viewer) return '';
+  return renderViewer();
+}
+function renderViewer(): string {
+  if (!state.viewer) return '';
+  const posts = state.viewer.posts;
+  const vIdx = state.viewer.index;
+  const p = posts[vIdx];
+  if (!p) return '';
+  const media = mediaUrl(p);
+  const isVid = isVideo(p);
+  const model = (p.model ?? p.models ?? {}) as AnyRecord;
+  const title = modelName(model);
+  const caption = postCaption(p) || '';
+  const id = idOf(p);
+  const likes = num(p, 'like_count', 'likeCount', 'likes_count');
+  const comments = num(p, 'comment_count', 'commentCount');
+  const activeLike = bool(p, 'liked_by_me', 'likedByMe', 'is_liked', 'isLiked', 'liked');
+  const activeSave = bool(p, 'saved_by_me', 'savedByMe', 'is_saved', 'isSaved', 'saved');
+  const activeMmc = bool(p, 'mmc_by_me', 'mmcByMe', 'is_mmc', 'isMmc', 'mmc');
+  let mediaHtml: string;
+  if (media) {
+    if (isVid) {
+      mediaHtml = `<video class="viewer-video" data-viewer-video muted playsinline preload="metadata" data-src="${esc(media)}" aria-label="Video by ${esc(title)}"><source src="${esc(media)}" type="video/mp4"></video>`;
+    } else {
+      mediaHtml = `<img class="viewer-media" src="${esc(media)}" alt="${esc(str(p, 'alt_text', 'altText') || `Post by ${title}`)}" loading="eager">`;
+    }
+  } else {
+    mediaHtml = `<div class="viewer-media media-placeholder"><span>Media unavailable</span></div>`;
+  }
+  const hasPrev = vIdx > 0;
+  const hasNext = vIdx < posts.length - 1;
+  return `<div class="viewer-overlay" role="dialog" aria-modal="true" aria-label="Post viewer">
+    <button class="viewer-close" data-action="close-viewer" aria-label="Close">${icon('close')}</button>
+    ${hasPrev ? `<button class="viewer-nav prev" data-action="viewer-prev" aria-label="Previous">${icon('back')}</button>` : ''}
+    ${hasNext ? `<button class="viewer-nav next" data-action="viewer-next" aria-label="Next">${icon('back')}</button>` : ''}
+    ${mediaHtml}
+    <div class="viewer-counter">${vIdx + 1} / ${posts.length}</div>
+    <div class="viewer-meta"><strong>${esc(title)}</strong><p>${esc(caption)}</p></div>
+    <div class="viewer-actions">
+      <button class="action-post" data-action="like" data-id="${esc(id)}" aria-pressed="${activeLike}">${activeLike ? icon('heartFill') : icon('heart')}</button>
+      <button class="action-post" data-action="save" data-id="${esc(id)}" aria-pressed="${activeSave}">${activeSave ? icon('bookmarkFill') : icon('bookmark')}</button>
+      <button class="action-post" data-action="comments" data-id="${esc(id)}">${icon('comment')}</button>
+      <button class="action-post" data-action="mmc" data-id="${esc(id)}" aria-pressed="${activeMmc}">${icon('mmc')}</button>
+    </div>
+  </div>`;
+}
 function shell(content: string): string {
   const admin = isAdmin();
   const showError = state.error && !content.includes('class="error-state"');
-  return `<div class="shell"><div class="phone-column"><header class="topbar"><a href="/" class="wordmark" data-go="/">Model Feed</a><div class="top-actions">${admin ? `<button class="plain-button small" data-go="/admin">Admin</button>` : ''}<button class="icon-button" data-go="/me" aria-label="Your account">${icon('profile')}</button></div></header>${showError ? `<div class="notice error-notice" role="alert">${esc(state.error)}</div>` : ''}<main class="page">${content}</main><nav class="bottom-nav" aria-label="Primary navigation">${navItem('/', 'Feed', 'home')}${navItem('/explore', 'Explore', 'explore')}${navItem('/models', 'Models', 'models')}${navItem('/me', 'You', 'profile')}</nav></div></div>${modalMarkup()}${adminOverlayMarkup()}`;
+  return `<div class="shell"><div class="phone-column"><header class="topbar"><a href="/" class="wordmark" data-go="/">Model Feed</a><div class="top-actions">${admin ? `<button class="plain-button small" data-go="/admin">Admin</button>` : ''}<button class="icon-button" data-go="/me" aria-label="Your account">${icon('profile')}</button></div></header>${showError ? `<div class="notice error-notice" role="alert">${esc(state.error)}</div>` : ''}<main class="page">${content}</main><nav class="bottom-nav" aria-label="Primary navigation">${navItem('/', 'Feed', 'home')}${navItem('/explore', 'Explore', 'explore')}${navItem('/models', 'Models', 'models')}${navItem('/me', 'You', 'profile')}</nav></div></div>${modalMarkup()}${adminOverlayMarkup()}${viewerMarkup()}`;
 }
 function isAdmin(): boolean {
   const p = state.profile as AnyRecord | null;
@@ -210,11 +268,35 @@ function postCard(p: AnyRecord): string {
     ? caption.trim().slice(0, 120) + ' …'
     : caption;
   const captionShowMore = words > 15;
+  const isMuted = bool(p, 'is_muted', 'isMuted', 'muted');
   const mediaHtml = media ? (isVideo(p)
     ? `<video data-feed-video muted playsinline preload="none" tabindex="0" data-src="${esc(media)}" aria-label="Video by ${esc(title)}. Activate to pause or play."></video>`
     : `<img loading="lazy" src="${esc(media)}" alt="${esc(str(p, 'alt_text', 'altText') || `Post by ${title}`)}" data-fullscreen="${esc(media)}" data-kind="${isVideo(p) ? 'video' : 'image'}" role="button" tabindex="0" aria-label="Open media fullscreen">`)
     : `<div class="media-placeholder"><span>Media unavailable</span></div>`;
-  return `<article class="post-card" data-post-card="${esc(id)}"><div class="post-media-wrap"><div class="post-media">${mediaHtml}<div class="post-creator"><a class="post-avatar" href="/models/${esc(slug)}" data-go="/models/${esc(slug)}" aria-label="${esc(title)}">${esc(title.trim().slice(0,1).toUpperCase())}</a><div class="post-creator-name">${esc(title)}</div><button class="post-follow-btn ${activeLike ? 'following' : ''}" data-action="follow" data-id="${esc(id)}" aria-pressed="${activeLike}">${activeLike ? 'Following' : 'Follow'}</button></div><div class="post-actions"><button class="action-post" data-action="mmc" data-id="${esc(id)}" aria-pressed="${activeMmc}">${icon('mmc')}</button><button class="action-post ${activeLike ? 'active-like' : ''}" data-action="like" data-id="${esc(id)}" aria-pressed="${activeLike}">${activeLike ? icon('heartFill') : icon('heart')}<span class="count">${likes}</span></button><button class="action-post" data-action="comments" data-id="${esc(id)}">${icon('comment')}<span class="count">${comments}</span></button><button class="action-post ${activeSave ? 'active-save' : ''}" data-action="save" data-id="${esc(id)}" aria-pressed="${activeSave}">${activeSave ? icon('bookmarkFill') : icon('bookmark')}</button>${isVideo(p) ? `<button class="action-post" data-action="mute" data-id="${esc(id)}" aria-label="Mute/unmute video">${activeMmc ? icon('volumeOff') : icon('volume')}</button>` : ''}<button class="action-post full-screen-btn" data-fullscreen="${esc(media)}" data-kind="${isVideo(p) ? 'video' : 'image'}" aria-label="Fullscreen">${icon('fullscreen')}</button></div><div class="post-caption">${captionShowMore ? `<div class="caption-text short" data-full="${esc(caption)}">${esc(captionShort)}</div><button class="show-more" data-action="toggle-caption" data-id="${esc(id)}">Show more</button>` : `<p class="caption-text full">${esc(caption)}</p>`}</div></div></div></article>`;
+  return `<article class="post-card" data-post-card="${esc(id)}"><div class="post-media-wrap"><div class="post-media">${mediaHtml}<div class="post-creator"><a class="post-avatar" href="/models/${esc(slug)}" data-go="/models/${esc(slug)}" aria-label="${esc(title)}">${esc(title.trim().slice(0,1).toUpperCase())}</a><div class="post-creator-name">${esc(title)}</div><button class="post-follow-btn ${state.followed.has(id) ? 'following' : ''}" data-action="follow" data-id="${esc(id)}" aria-pressed="${state.followed.has(id)}">${state.followed.has(id) ? 'Following' : 'Follow'}</button></div><div class="post-actions"><button class="action-post" data-action="mmc" data-id="${esc(id)}" aria-pressed="${activeMmc}">${icon('mmc')}</button><button class="action-post ${activeLike ? 'active-like' : ''}" data-action="like" data-id="${esc(id)}" aria-pressed="${activeLike}">${activeLike ? icon('heartFill') : icon('heart')}<span class="count">${likes}</span></button><button class="action-post" data-action="comments" data-id="${esc(id)}">${icon('comment')}<span class="count">${comments}</span></button><button class="action-post ${activeSave ? 'active-save' : ''}" data-action="save" data-id="${esc(id)}" aria-pressed="${activeSave}">${activeSave ? icon('bookmarkFill') : icon('bookmark')}</button>${isVideo(p) ? `<button class="action-post ${isMuted ? 'active-mute' : ''}" data-action="mute" data-id="${esc(id)}" aria-label="Mute/unmute video">${isMuted ? icon('volumeOff') : icon('volume')}</button>` : ''}<button class="action-post full-screen-btn" data-fullscreen="${esc(media)}" data-kind="${isVideo(p) ? 'video' : 'image'}" aria-label="Fullscreen">${icon('fullscreen')}</button></div><div class="post-caption">${captionShowMore ? `<div class="caption-text short" data-full="${esc(caption)}">${esc(captionShort)}</div><button class="show-more" data-action="toggle-caption" data-id="${esc(id)}">Show more</button>` : `<p class="caption-text full">${esc(caption)}</p>`}</div></div></div></article>`;
+}
+function gridView(posts: AnyRecord[], source: string, options: { showOverlay?: boolean; showModelName?: boolean } = {}): string {
+  const postsJson = esc(JSON.stringify(posts));
+  return `<div class="grid-view">${posts.map(p => {
+    const id = idOf(p);
+    const media = mediaUrl(p);
+    const isVid = isVideo(p);
+    const model = (p.model ?? p.models ?? {}) as AnyRecord;
+    const name = modelName(model);
+    let mediaHtml: string;
+    if (media) {
+      if (isVid) {
+        const poster = str(p, 'poster_url', 'posterUrl', 'thumbnail_url', 'thumbnailUrl');
+        mediaHtml = `<video class="grid-video" muted preload="none" poster="${esc(poster || media)}" aria-label="${esc(name || 'Video')}"><source src="${esc(media)}" type="video/mp4"></video>`;
+      } else {
+        mediaHtml = `<img loading="lazy" src="${esc(media)}" alt="${esc(str(p, 'alt_text', 'altText') || 'Post by ' + name)}">`;
+      }
+    } else {
+      mediaHtml = `<div class="media-placeholder"><span>Media unavailable</span></div>`;
+    }
+    const overlay = options.showModelName && name ? `<div class="grid-overlay">${esc(name)}</div>` : '';
+    return `<div class="grid-tile" data-grid-tile="${esc(id)}" data-grid-source="${esc(source)}" data-grid-posts="${postsJson}" data-post-card="${esc(id)}">${mediaHtml}${overlay}</div>`;
+  }).join('')}</div>`;
 }
 function modelCard(m: AnyRecord): string {
   const name = modelName(m), slug = modelSlug(m);
@@ -243,7 +325,7 @@ async function pageExplore(): Promise<string> {
   const styleItems=list(styles);
   const firstRow = visibleModels.slice(0,6).map(modelCard).join('');
   const secondRow = visibleModels.slice(6,12).map(modelCard).join('');
-  return `${heading('Find your point of view', 'Explore', 'A considered collection of new work from across the community.')}${searchField('Search creators or posts')}<div class="section-title"><h2>Creators</h2><a href="/models" data-go="/models">All models</a></div><div class="model-grid">${firstRow}${secondRow}</div><div class="section-title"><h2>Styles</h2><a href="/styles" data-go="/styles">Browse all</a></div><div class="chips">${styleItems.slice(0,6).map(s=>`<a class="chip" href="/styles/${esc(str(s,'slug')||idOf(s))}" data-go="/styles/${esc(str(s,'slug')||idOf(s))}">${esc(str(s,'name','title'))}</a>`).join('') || '<span class="muted small">No styles yet.</span>'}</div><div class="section-title"><h2>Recent posts</h2></div><div class="feed">${visiblePosts.length ? visiblePosts.map(postCard).join('') : stateBlock('empty','New posts will appear here.')}</div>`;
+  return `${heading('Find your point of view', 'Explore', 'A considered collection of new work from across the community.')}${searchField('Search creators or posts')}<div class="section-title"><h2>Creators</h2><a href="/models" data-go="/models">All models</a></div><div class="model-grid">${firstRow}${secondRow}</div><div class="section-title"><h2>Styles</h2><a href="/styles" data-go="/styles">Browse all</a></div><div class="chips">${styleItems.slice(0,6).map(s=>`<a class="chip" href="/styles/${esc(str(s,'slug')||idOf(s))}" data-go="/styles/${esc(str(s,'slug')||idOf(s))}">${esc(str(s,'name','title'))}</a>`).join('') || '<span class="muted small">No styles yet.</span>'}</div><div class="section-title"><h2>Recent posts</h2></div>${visiblePosts.length ? gridView(visiblePosts, 'explore', { showModelName: true }) : stateBlock('empty','New posts will appear here.')}</div>`;
 }
 async function pageModels(): Promise<string> {
   const models = publicModels(await loadModels(state.search));
@@ -257,7 +339,7 @@ async function pageModel(slug: string): Promise<string> {
   const name = modelName(model), followed = state.followed.has(id) || bool(model,'is_following','isFollowing','following');
   const image = modelImageUrl(model);
   const styles = Array.isArray(model.styles) ? model.styles as AnyRecord[] : [];
-  return `<section class="model-profile">${image ? `<img class="avatar" style="object-fit:cover" src="${esc(image)}" alt="${esc(name)}">` : `<div class="avatar">${esc(name.slice(0,1).toUpperCase())}</div>`}<div style="flex:1"><span class="eyebrow">Creator</span><h1>${esc(name)}</h1><span class="muted small">${esc(str(model,'location','handle'))}</span></div><button class="btn btn-outline btn-small" data-action="follow" data-id="${esc(id)}" aria-pressed="${followed}">${followed?'Following':'Follow'}</button></section><p class="model-bio">${esc(str(model,'bio','description'))}</p>${styles.length ? `<div class="chips spacer-top">${styles.map(s=>`<a class="chip" href="/styles/${esc(str(s,'slug')||idOf(s))}" data-go="/styles/${esc(str(s,'slug')||idOf(s))}">${esc(str(s,'name','title'))}</a>`).join('')}</div>`:''}<div class="section-title"><h2>Posts</h2><span class="muted small">${posts.length} shared</span></div><div class="feed">${posts.length ? posts.map(postCard).join('') : stateBlock('empty','This creator has not shared any posts yet.')}</div>`;
+  return `<section class="model-profile">${image ? `<img class="avatar" style="object-fit:cover" src="${esc(image)}" alt="${esc(name)}">` : `<div class="avatar">${esc(name.slice(0,1).toUpperCase())}</div>`}<div style="flex:1"><span class="eyebrow">Creator</span><h1>${esc(name)}</h1><span class="muted small">${esc(str(model,'location','handle'))}</span></div><button class="btn btn-outline btn-small" data-action="follow" data-id="${esc(id)}" aria-pressed="${followed}">${followed?'Following':'Follow'}</button></section><p class="model-bio">${esc(str(model,'bio','description'))}</p>${styles.length ? `<div class="chips spacer-top">${styles.map(s=>`<a class="chip" href="/styles/${esc(str(s,'slug')||idOf(s))}" data-go="/styles/${esc(str(s,'slug')||idOf(s))}">${esc(str(s,'name','title'))}</a>`).join('')}</div>`:''}<div class="section-title"><h2>Posts</h2><span class="muted small">${posts.length} shared</span></div><div class="grid-posts">${posts.length ? gridView(posts, 'model:${esc(id)}', { showModelName: false }) : stateBlock('empty','This creator has not shared any posts yet.')}</div>`;
 }
 async function pageStyles(): Promise<string> {
   const styles = list(await listStyles({limit:100,offset:0}));
@@ -284,7 +366,9 @@ async function profilePage(): Promise<string> {
     listFollowedStyles(),
   ]);
   const followedModels=publicModels(models).filter(m=>state.followed.has(idOf(m)));
-  return `${heading('Your space','Account',str(p,'display_name','displayName','name') ? `Signed in as ${str(p,'display_name','displayName','name')}` : 'Your account and followed creators.')}${isAdmin() ? `<div class="admin-links"><a class="admin-link" href="/admin" data-go="/admin"><span>Administration</span><small>Manage catalog →</small></a></div>`:''}<div class="section-title"><h2>Following</h2><a href="/models" data-go="/models">Discover</a></div>${followedModels.length?`<div class="model-grid">${followedModels.map(modelCard).join('')}</div>`:stateBlock('empty','Creators you follow will be gathered here.')}<div class="section-title spacer-top"><h2>Followed styles</h2><a href="/styles" data-go="/styles">Browse styles</a></div><div class="chips">${styles.map(s=>`<a class="chip" href="/styles/${esc(str(s,'slug')||idOf(s))}" data-go="/styles/${esc(str(s,'slug')||idOf(s))}">${esc(str(s,'name','title'))}</a>`).join('') || '<span class="muted small">Styles you follow will appear here.</span>'}</div><div class="spacer-top"><button class="btn btn-outline btn-block" data-action="signout">Sign out</button></div>`;
+  let savedPosts: AnyRecord[] = [];
+  if (state.user) { try { savedPosts = publicPosts(await listSavedPosts()); } catch (err) { actionError(err); } }
+  return `${heading('Your space','Account',str(p,'display_name','displayName','name') ? `Signed in as ${str(p,'display_name','displayName','name')}` : 'Your account and followed creators.')}${isAdmin() ? `<div class="admin-links"><a class="admin-link" href="/admin" data-go="/admin"><span>Administration</span><small>Manage catalog →</small></a></div>`:''}<div class="section-title"><h2>Following</h2><a href="/models" data-go="/models">Discover</a></div>${followedModels.length?`<div class="model-grid">${followedModels.map(modelCard).join('')}</div>`:stateBlock('empty','Creators you follow will be gathered here.')}<div class="section-title spacer-top"><h2>Saved posts</h2></div>${state.user ? (savedPosts.length ? gridView(savedPosts, 'me:saved', { showModelName: false }) : stateBlock('empty','Posts you save will appear here.')) : ''}<div class="section-title spacer-top"><h2>Followed styles</h2><a href="/styles" data-go="/styles">Browse styles</a></div><div class="chips">${styles.map(s=>`<a class="chip" href="/styles/${esc(str(s,'slug')||idOf(s))}" data-go="/styles/${esc(str(s,'slug')||idOf(s))}">${esc(str(s,'name','title'))}</a>`).join('') || '<span class="muted small">Styles you follow will appear here.</span>'}</div><div class="spacer-top"><button class="btn btn-outline btn-block" data-action="signout">Sign out</button></div>`;
 }
 function authPage(): string {
   const tab = state.modalData.authMode || 'signin';
@@ -464,6 +548,7 @@ async function render(): Promise<void> {
       catch (err) { throw err; }
     }
     if ((current.path === '/admin/models') && isAdmin()) state.styles = list(await listStyles({limit:100,offset:0}));
+    state.posts = publicPosts(await loadPosts({ limit: 1000, offset: 0, search: state.search || undefined }));
     const content = await page(current);
     if (generation !== state.generation) return;
     root!.innerHTML = shell(content);
@@ -483,6 +568,8 @@ async function render(): Promise<void> {
 }
 let videoObserver: IntersectionObserver | null = null;
 function observeMedia(): void {
+  videoObserver?.disconnect();
+  videoObserver = null;
   const videos = root!.querySelectorAll<HTMLVideoElement>('video[data-feed-video]');
   if (!videos.length) return;
   if (!('IntersectionObserver' in window)) {
@@ -1004,6 +1091,47 @@ async function handleAction(button: HTMLElement): Promise<void> {
         await render(); break;
       }
       case 'comments': await openComments(id); break;
+      case 'mute': {
+        if (!id) break;
+        const p = state.posts.find(function(x) { return idOf(x) === id; });
+        if (!p) break;
+        const isMuted = bool(p, 'is_muted', 'isMuted', 'muted');
+        const next = !isMuted;
+        const { error } = await getSupabase()
+          .from('posts')
+          .update({ is_muted: next, muted: next })
+          .eq('id', id);
+        if (error) { actionError(error); break; }
+        toast('Muted ' + (next ? 'on' : 'off'));
+        await render(); break;
+      }
+      case 'save': {
+        if (!id) break;
+        await toggleSave(id);
+        await render(); break;
+      }
+      case 'toggle-caption': {
+        const card = button.closest('[data-post-card]');
+        if (card) {
+          const shortEl = card.querySelector('.caption-text.short');
+          if (shortEl) {
+            shortEl.classList.remove('short');
+            shortEl.classList.add('full');
+            const btn = card.querySelector('[data-action="toggle-caption"]');
+            if (btn) (btn as HTMLElement).style.display = 'none';
+          }
+        }
+        return;
+      }
+      case 'close-viewer': closeViewer(); return;
+      case 'viewer-prev': {
+        if (state.viewer && state.viewer.index > 0) { state.viewer.index--; await render(); }
+        return;
+      }
+      case 'viewer-next': {
+        if (state.viewer && state.viewer.index < state.viewer.posts.length - 1) { state.viewer.index++; await render(); }
+        return;
+      }
       case 'signout': await signOut(); state.user=null; state.profile=null; state.followed.clear(); state.followedStyles.clear(); go('/'); toast('You have signed out.'); break;
       case 'profile-image-select':
         if (!isAdmin()) throw new Error('Administrator access is required.');
@@ -1261,6 +1389,47 @@ async function handleSubmit(form: HTMLFormElement): Promise<void> {
 }
 
 let searchTimer = 0;
+let currentViewerPosts: AnyRecord[] = [];
+let currentViewerIndex = 0;
+let lastScrollY = 0;
+
+function openViewer(posts: AnyRecord[], startIndex: number): void {
+  currentViewerPosts = posts;
+  currentViewerIndex = startIndex;
+  state.viewer = { posts, index: startIndex };
+  lastScrollY = window.scrollY;
+  document.body.classList.add('body-locked');
+  void render();
+}
+
+function closeViewer(): void {
+  state.viewer = null;
+  document.body.classList.remove('body-locked');
+  void render();
+}
+
+function openViewerForMedia(src: string, kind: string, origin: HTMLElement): void {
+  const post = origin.closest('[data-post-card]');
+  const card = post as any;
+  if (card) {
+    const pid = card.dataset.postCard || idOf(card);
+    const idx = state.posts.findIndex(function(p) { return idOf(p) === pid; });
+    if (idx >= 0) openViewer([state.posts[idx]], 0);
+  }
+}
+
+function openViewerFromGrid(postId: string, source: string, collection: string): void {
+  try {
+    const arr = collection ? JSON.parse(collection) : [];
+    const ids = arr.map(function(p: any) { return idOf(p); });
+    const idx = ids.indexOf(postId);
+    if (idx >= 0) openViewer(arr, idx);
+    else openViewer([state.posts.find(function(p: any) { return idOf(p) === postId; }) as AnyRecord].filter(Boolean), 0);
+  } catch {
+    openViewer(state.posts.filter(function(p) { return idOf(p) === postId; }), 0);
+  }
+}
+
 document.addEventListener('click', e => {
   const target=e.target as HTMLElement;
   const video=target.closest<HTMLVideoElement>('video[data-feed-video]');
@@ -1281,41 +1450,24 @@ document.addEventListener('click', e => {
   const full=target.closest<HTMLElement>('[data-fullscreen]');
   if (full) {
     const src=full.dataset.fullscreen||'', kind=full.dataset.kind||'image';
-    const wrap=document.createElement('div'); wrap.className='fullscreen'; wrap.setAttribute('role','dialog'); wrap.setAttribute('aria-modal','true');
-    const media=kind==='video'?document.createElement('video'):document.createElement('img');
-    media.className='fullscreen-media';
-    media.setAttribute('src',src);
-    if (media instanceof HTMLVideoElement) { media.controls=true; media.autoplay=true; media.playsInline=true; media.muted=true; }
-    else media.setAttribute('alt','Expanded post media');
-    const close=document.createElement('button'); close.className='fullscreen-close'; close.textContent='Close'; close.setAttribute('aria-label','Close fullscreen media');
-    close.addEventListener('click',()=>{wrap.remove();full.focus();});
-    wrap.addEventListener('click',ev=>{if(ev.target===wrap)wrap.remove();});
-    wrap.append(media,close);
-    if (media instanceof HTMLImageElement) {
-      const zoom=document.createElement('button');
-      zoom.className='fullscreen-zoom';
-      zoom.type='button';
-      zoom.textContent='Zoom in';
-      zoom.setAttribute('aria-label','Zoom image in');
-      let scale=1;
-      const setScale=(next:number)=>{
-        scale=Math.min(3,Math.max(1,next));
-        media.style.transform=`scale(${scale})`;
-        media.classList.toggle('zoomed',scale>1);
-        zoom.textContent=scale>1?'Zoom out':'Zoom in';
-        zoom.setAttribute('aria-label',scale>1?'Reset image zoom':'Zoom image in');
-      };
-      zoom.addEventListener('click',()=>setScale(scale>1?1:2));
-      media.addEventListener('dblclick',()=>setScale(scale>1?1:2));
-      wrap.addEventListener('wheel',ev=>{
-        if (ev.deltaY!==0) { ev.preventDefault(); setScale(scale+(ev.deltaY<0?.2:-.2)); }
-      },{passive:false});
-      wrap.append(zoom);
+    openViewerForMedia(src, kind, full);
+    e.preventDefault();
+    return;
+  }
+  const gridTile = target.closest<HTMLElement>('[data-grid-tile]');
+  if (gridTile) {
+    e.stopPropagation();
+    const postId = gridTile.dataset.gridTile || '';
+    if (postId) {
+      const source = gridTile.dataset.gridSource || 'feed';
+      const collection = gridTile.dataset.gridPosts || '';
+      openViewerFromGrid(postId, source, collection);
+      e.preventDefault();
     }
-    document.body.append(wrap); close.focus(); return;
+    return;
   }
   const button=target.closest<HTMLElement>('[data-action]');
-  if (button) { void handleAction(button); return; }
+  if (button) { e.stopPropagation(); void handleAction(button); return; }
 });
 document.addEventListener('submit', e => {
   const form=e.target;
@@ -1357,7 +1509,10 @@ document.addEventListener('change', e => {
   if (select.dataset.filter) void render();
 });
 document.addEventListener('keydown', e => {
-  if (e.key==='Escape') document.querySelector('.fullscreen')?.remove();
+  if (e.key==='Escape') {
+    if (state.viewer) { closeViewer(); }
+    else document.querySelector('.fullscreen')?.remove();
+  }
   const target=e.target;
   if ((e.key===' ' || e.key==='Enter') && target instanceof HTMLImageElement && target.hasAttribute('data-fullscreen')) {
     e.preventDefault();

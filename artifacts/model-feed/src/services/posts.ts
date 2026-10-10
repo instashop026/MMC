@@ -10,7 +10,7 @@ import type {
 } from "../types/models";
 import { getSupabase } from "./supabase";
 import { postStats } from "./interactions";
-import { buildImageEmbedUrl, buildVideoEmbedUrl, buildDownloadUrl } from "../lib/zerostorage-urls";
+import { buildDownloadUrl } from "../lib/zerostorage-urls";
 
 export interface ListPostsOptions {
   limit: number;
@@ -23,7 +23,7 @@ export interface ListPostsOptions {
 }
 
 function mediaUrlForPost(fileId: string, type: MediaType): string {
-  return type === "video" ? buildVideoEmbedUrl(fileId) : buildDownloadUrl(fileId);
+  return buildDownloadUrl(fileId);
 }
 
 export async function findImportedFileIds(fileIds: string[]): Promise<Set<string>> {
@@ -125,12 +125,29 @@ export async function listPosts({
     comment_count: stats.get(row.id)?.comment_count ?? 0,
     liked_by_me: stats.get(row.id)?.liked_by_me ?? false,
     mmc_by_me: stats.get(row.id)?.mmc_by_me ?? false,
+    saved_by_me: stats.get(row.id)?.saved_by_me ?? false,
   }));
 }
 
 export async function getPost(id: string): Promise<Post | null> {
   const posts = await listPosts({ limit: 1, offset: 0, postIds: [id] });
   return posts[0] ?? null;
+}
+
+export async function listSavedPosts(): Promise<Post[]> {
+  const client = getSupabase();
+  const { data: authData, error: authError } = await client.auth.getUser();
+  if (authError || !authData.user) throw new Error("Sign in to view saved posts.");
+  const userId = authData.user.id;
+  const { data: saved, error: savedError } = await client
+    .from("saved_posts")
+    .select("post_id")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+  if (savedError) throw new Error(`Could not load saved posts: ${savedError.message}`);
+  const postIds = (saved ?? []).map((row: { post_id: string }) => row.post_id);
+  if (!postIds.length) return [];
+  return listPosts({ limit: 100, offset: 0, postIds });
 }
 
 export async function createPost(input: PostInput): Promise<Post> {

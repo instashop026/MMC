@@ -56,6 +56,7 @@ export interface Post {
   comment_count: number;
   liked_by_me: boolean;
   mmc_by_me: boolean;
+  saved_by_me: boolean;
 }
 
 export interface ModelDetail extends Model {
@@ -90,6 +91,7 @@ export interface PostStats {
   comment_count: number;
   liked_by_me: boolean;
   mmc_by_me: boolean;
+  saved_by_me: boolean;
 }
 
 export interface ModelInput {

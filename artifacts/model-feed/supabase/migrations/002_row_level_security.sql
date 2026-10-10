@@ -42,6 +42,10 @@ begin
     (select count(*) from public.mmcs m where m.post_id = p.id),
     (select count(*) from public.comments c where c.post_id = p.id),
     exists (
+      select 1 from public.saved_posts s
+      where s.post_id = p.id and s.user_id = auth.uid()
+    ),
+    exists (
       select 1 from public.likes l
       where l.post_id = p.id and l.user_id = auth.uid()
     ),
@@ -367,6 +371,7 @@ grant select on public.models, public.styles, public.model_styles, public.posts,
 grant insert, update, delete on public.models, public.styles, public.model_styles,
   public.content_sources, public.posts, public.post_styles to authenticated;
 grant select, insert, delete on public.follows, public.style_follows, public.likes, public.mmcs to authenticated;
+grant select, insert, delete on public.saved_posts to authenticated;
 grant select, insert, update, delete on public.comments to authenticated;
 grant select on public.comments to anon;
 grant select, insert, update, delete on public.content_sources to authenticated;

@@ -76,3 +76,46 @@ export function toggleLike(postId: string): Promise<ToggleResult> {
 export function toggleMMC(postId: string): Promise<ToggleResult> {
   return togglePostReaction("mmcs", postId, "MMC");
 }
+
+export async function toggleSave(postId: string): Promise<ToggleResult> {
+  const client = getSupabase();
+  const { data: authData, error: authError } = await client.auth.getUser();
+  if (authError || !authData.user) throw new Error("Sign in to save posts.");
+  const userId = authData.user.id;
+  const { data: existing, error: selectError } = await client
+    .from("saved_posts")
+    .select("post_id")
+    .eq("user_id", userId)
+    .eq("post_id", postId)
+    .maybeSingle();
+  if (selectError) throw new Error(`Could not check saved status: ${selectError.message}`);
+
+  let active: boolean;
+  if (existing) {
+    const { error } = await client
+      .from("saved_posts")
+      .delete()
+      .eq("user_id", userId)
+      .eq("post_id", postId);
+    if (error) throw new Error(`Could not unsave post: ${error.message}`);
+    active = false;
+  } else {
+    const { error } = await client.from("saved_posts").insert({ user_id: userId, post_id: postId });
+    if (error) throw new Error(`Could not save post: ${error.message}`);
+    active = true;
+  }
+  return { active, count: 0 };
+}
+
+export async function getSavedPostIds(): Promise<string[]> {
+  const client = getSupabase();
+  const { data: authData, error: authError } = await client.auth.getUser();
+  if (authError || !authData.user) return [];
+  const userId = authData.user.id;
+  const { data, error } = await client
+    .from("saved_posts")
+    .select("post_id")
+    .eq("user_id", userId);
+  if (error) throw new Error(`Could not load saved posts: ${error.message}`);
+  return (data ?? []).map((row: { post_id: string }) => row.post_id);
+}

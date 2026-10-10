@@ -155,9 +155,7 @@ h1 { font-size: clamp(32px, 8vw, 48px); line-height: 1.07; margin-bottom: 10px; 
   gap: 8px;
   padding: 16px 12px;
   pointer-events: auto;
-  background: rgba(23,23,31,.92);
-  backdrop-filter: blur(12px);
-  border-left: 1px solid var(--line-soft);
+  background: transparent;
   z-index: 3;
 }
 .post-actions .action-post {
@@ -402,7 +400,114 @@ h1 { font-size: clamp(32px, 8vw, 48px); line-height: 1.07; margin-bottom: 10px; 
 .comment-input:focus { border-color: var(--gold); }
 .comment-actions { display: flex; gap: 8px; align-items: center; }
 
-/* ── Fullscreen Viewer ── */
+/* ── Post Viewer Lightbox ── */
+.viewer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0,0,0,.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+}
+.viewer-media {
+  max-width: 95vw;
+  max-height: 95vh;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 40px 80px rgba(0,0,0,.6);
+}
+.viewer-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 2010;
+  border: 0;
+  background: rgba(255,255,255,.1);
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text);
+}
+.viewer-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2010;
+  border: 0;
+  background: rgba(255,255,255,.1);
+  border-radius: 50%;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text);
+}
+.viewer-nav.prev { left: 16px; }
+.viewer-nav.next { right: 16px; }
+.viewer-counter {
+  position: absolute;
+  bottom: 16px;
+  z-index: 2010;
+  color: var(--muted);
+  font-size: 13px;
+}
+.viewer-video {
+  max-width: 95vw;
+  max-height: 95vh;
+  border-radius: 8px;
+  box-shadow: 0 40px 80px rgba(0,0,0,.6);
+}
+
+/* ── Body scroll lock ── */
+.body-locked {
+  overflow: hidden;
+  position: fixed;
+  width: 100%;
+}
+
+/* ── Grid View (compact tile) ── */
+.grid-view {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+.grid-view .grid-tile {
+  position: relative;
+  aspect-ratio: 1/1;
+  cursor: pointer;
+  border-radius: 2px;
+  overflow: hidden;
+  background: #292927;
+}
+.grid-view .grid-tile img, .grid-view .grid-tile video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.grid-view .grid-tile .grid-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 6px 8px;
+  background: linear-gradient(to top, rgba(0,0,0,.7), transparent);
+  font-size: 10px;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Fullscreen Viewer */
 .fullscreen-overlay {
   position: fixed;
   inset: 0;
