@@ -10,6 +10,8 @@ create index if not exists saved_posts_post_idx on public.saved_posts (post_id);
 create index if not exists saved_posts_user_idx on public.saved_posts (user_id);
 
 -- Extend get_post_stats to include saved_by_me
+-- Must DROP first since return type changes (can't CREATE OR REPLACE with different signature)
+drop function if exists public.get_post_stats(uuid[]);
 create or replace function public.get_post_stats(post_ids uuid[])
 returns table (
   post_id uuid,

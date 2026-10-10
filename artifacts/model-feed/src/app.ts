@@ -228,16 +228,23 @@ function renderViewer(): string {
   const hasNext = vIdx < posts.length - 1;
   return `<div class="viewer-overlay" role="dialog" aria-modal="true" aria-label="Post viewer">
     <button class="viewer-close" data-action="close-viewer" aria-label="Close">${icon('close')}</button>
-    ${hasPrev ? `<button class="viewer-nav prev" data-action="viewer-prev" aria-label="Previous">${icon('back')}</button>` : ''}
-    ${hasNext ? `<button class="viewer-nav next" data-action="viewer-next" aria-label="Next">${icon('back')}</button>` : ''}
-    ${mediaHtml}
-    <div class="viewer-counter">${vIdx + 1} / ${posts.length}</div>
-    <div class="viewer-meta"><strong>${esc(title)}</strong><p>${esc(caption)}</p></div>
-    <div class="viewer-actions">
-      <button class="action-post" data-action="like" data-id="${esc(id)}" aria-pressed="${activeLike}">${activeLike ? icon('heartFill') : icon('heart')}</button>
-      <button class="action-post" data-action="save" data-id="${esc(id)}" aria-pressed="${activeSave}">${activeSave ? icon('bookmarkFill') : icon('bookmark')}</button>
-      <button class="action-post" data-action="comments" data-id="${esc(id)}">${icon('comment')}</button>
-      <button class="action-post" data-action="mmc" data-id="${esc(id)}" aria-pressed="${activeMmc}">${icon('mmc')}</button>
+    ${hasPrev ? `<button class="viewer-nav prev" data-action="viewer-prev" aria-label="Previous">&#8249;</button>` : ''}
+    ${hasNext ? `<button class="viewer-nav next" data-action="viewer-next" aria-label="Next">&#8250;</button>` : ''}
+    <div class="viewer-media-wrap">
+      ${mediaHtml}
+      <div class="viewer-bottom">
+        <div class="viewer-meta">
+          <span class="viewer-model-name">${esc(title)}</span>
+          <span class="viewer-counter">${vIdx + 1} / ${posts.length}</span>
+        </div>
+        <div class="viewer-caption">${esc(caption)}</div>
+        <div class="viewer-actions">
+          <button class="action-post" data-action="like" data-id="${esc(id)}" aria-pressed="${activeLike}">${activeLike ? icon('heartFill') : icon('heart')}<span class="count">${likes}</span></button>
+          <button class="action-post" data-action="mmc" data-id="${esc(id)}" aria-pressed="${activeMmc}">${icon('mmc')}</button>
+          <button class="action-post" data-action="save" data-id="${esc(id)}" aria-pressed="${activeSave}">${activeSave ? icon('bookmarkFill') : icon('bookmark')}</button>
+          <button class="action-post" data-action="comments" data-id="${esc(id)}">${icon('comment')}<span class="count">${comments}</span></button>
+        </div>
+      </div>
     </div>
   </div>`;
 }
@@ -319,7 +326,7 @@ async function pageFeed(): Promise<string> {
   return `${heading('A closer look', 'The feed', 'Recent work from across the creator community.')}${searchField('Search the feed')}<div class="feed">${posts.length ? posts.map(postCard).join('') : stateBlock('empty', 'New posts will appear here.')}</div>`;
 }
 async function pageExplore(): Promise<string> {
-  const [posts, models, styles] = await Promise.all([loadPosts({limit:24,offset:0,search:state.search || undefined}), loadModels(state.search), listStyles({limit:24,offset:0})]);
+  const [posts, models, styles] = await Promise.all([loadPosts({limit:1000,offset:0,search:state.search || undefined}), loadModels(state.search), listStyles({limit:24,offset:0})]);
   const visiblePosts = publicPosts(posts);
   const visibleModels = publicModels(models);
   const styleItems=list(styles);
@@ -553,6 +560,7 @@ async function render(): Promise<void> {
     if (generation !== state.generation) return;
     root!.innerHTML = shell(content);
     observeMedia();
+    if (state.viewer) setupViewerInteractions();
     if (state.importReview || state.storageBrowser || state.modal) {
       const focusTarget = state.importReview
         ? root!.querySelector<HTMLElement>('.import-review-overlay button:not([disabled])')
@@ -1073,8 +1081,33 @@ async function handleAction(button: HTMLElement): Promise<void> {
       case 'close-modal': state.modal=''; state.modalData={}; await render(); break;
       case 'modal-outside': break;
       case 'auth-mode': state.modalData.authMode=button.dataset.mode; await render(); break;
-      case 'like': await toggleLike(id); await render(); break;
-      case 'mmc': await toggleMMC(id); await render(); break;
+      case 'like': {
+        await toggleLike(id);
+        // Update viewer in-place if open
+        const vEl = root!.querySelector('.viewer-overlay');
+        if (vEl && state.viewer && state.viewer.posts[state.viewer.index]) {
+          const vp = state.viewer.posts[state.viewer.index];
+          const activeLike = bool(vp, 'liked_by_me', 'likedByMe', 'is_liked', 'isLiked', 'liked');
+          const likeBtn = vEl.querySelector('[data-action="like"]');
+          if (likeBtn) likeBtn.setAttribute('aria-pressed', String(activeLike));
+          likeBtn?.replaceChildren(activeLike ? icon('heartFill') : icon('heart'));
+          const countSpan = likeBtn?.querySelector('.count');
+          if (countSpan) countSpan.textContent = String(num(vp, 'like_count', 'likeCount', 'likes_count'));
+        }
+        await render(); break;
+      }
+      case 'mmc': {
+        await toggleMMC(id);
+        const vEl = root!.querySelector('.viewer-overlay');
+        if (vEl && state.viewer && state.viewer.posts[state.viewer.index]) {
+          const vp = state.viewer.posts[state.viewer.index];
+          const activeMmc = bool(vp, 'mmc_by_me', 'mmcByMe', 'is_mmc', 'isMmc', 'mmc');
+          const mmcBtn = vEl.querySelector('[data-action="mmc"]');
+          if (mmcBtn) mmcBtn.setAttribute('aria-pressed', String(activeMmc));
+          mmcBtn?.replaceChildren(icon('mmc'));
+        }
+        await render(); break;
+      }
       case 'follow': {
         if (!state.user) { go('/me'); toast('Sign in to follow a creator.'); break; }
         await toggleFollow(id);
@@ -1108,6 +1141,15 @@ async function handleAction(button: HTMLElement): Promise<void> {
       case 'save': {
         if (!id) break;
         await toggleSave(id);
+        // Update viewer in-place if open
+        const vEl = root!.querySelector('.viewer-overlay');
+        if (vEl && state.viewer && state.viewer.posts[state.viewer.index]) {
+          const vp = state.viewer.posts[state.viewer.index];
+          const saved = bool(vp, 'saved_by_me', 'savedByMe', 'is_saved', 'isSaved', 'saved');
+          const saveBtn = vEl.querySelector('[data-action="save"]');
+          if (saveBtn) saveBtn.setAttribute('aria-pressed', String(saved));
+          saveBtn?.replaceChildren(saved ? icon('bookmarkFill') : icon('bookmark'));
+        }
         await render(); break;
       }
       case 'toggle-caption': {
@@ -1125,11 +1167,21 @@ async function handleAction(button: HTMLElement): Promise<void> {
       }
       case 'close-viewer': closeViewer(); return;
       case 'viewer-prev': {
-        if (state.viewer && state.viewer.index > 0) { state.viewer.index--; await render(); }
+        if (state.viewer && state.viewer.index > 0) {
+          state.viewer.index--;
+          const el = root!.querySelector('.viewer-overlay');
+          if (el) el.outerHTML = renderViewer();
+          observeMedia();
+        }
         return;
       }
       case 'viewer-next': {
-        if (state.viewer && state.viewer.index < state.viewer.posts.length - 1) { state.viewer.index++; await render(); }
+        if (state.viewer && state.viewer.index < state.viewer.posts.length - 1) {
+          state.viewer.index++;
+          const el = root!.querySelector('.viewer-overlay');
+          if (el) el.outerHTML = renderViewer();
+          observeMedia();
+        }
         return;
       }
       case 'signout': await signOut(); state.user=null; state.profile=null; state.followed.clear(); state.followedStyles.clear(); go('/'); toast('You have signed out.'); break;
@@ -1389,7 +1441,7 @@ async function handleSubmit(form: HTMLFormElement): Promise<void> {
 }
 
 let searchTimer = 0;
-let currentViewerPosts: AnyRecord[] = [];
+let currentViewerPosts: AnyRecord[] | null = null;
 let currentViewerIndex = 0;
 let lastScrollY = 0;
 
@@ -1404,8 +1456,83 @@ function openViewer(posts: AnyRecord[], startIndex: number): void {
 
 function closeViewer(): void {
   state.viewer = null;
+  currentViewerPosts = null;
+  currentViewerIndex = -1;
   document.body.classList.remove('body-locked');
-  void render();
+  window.scrollTo(0, lastScrollY);
+  const existing = root!.querySelector('.viewer-overlay');
+  if (existing) existing.remove();
+}
+
+function setupViewerInteractions(): void {
+  const overlay = root!.querySelector('.viewer-overlay') as HTMLElement;
+  if (!overlay) return;
+
+  // Drag-scroll: navigate to next/prev on horizontal drag
+  let startX = 0;
+  let startY = 0;
+  let isDragging = false;
+  let dragThreshold = 40;
+
+  overlay.addEventListener('touchstart', (e: TouchEvent) => {
+    if (e.touches.length === 1) {
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+      isDragging = true;
+    }
+  }, { passive: true });
+
+  overlay.addEventListener('touchmove', (e: TouchEvent) => {
+    if (!isDragging || e.touches.length !== 1) return;
+    const dx = e.touches[0].clientX - startX;
+    const dy = e.touches[0].clientY - startY;
+    // Only trigger nav if horizontal drag is dominant
+    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > dragThreshold) {
+      const vid = overlay.querySelector('.viewer-video') as HTMLVideoElement;
+      if (vid && !vid.paused) { vid.pause(); } // pause before navigating
+      isDragging = false;
+      if (dx > 0 && state.viewer && state.viewer.index > 0) {
+        // swipe right = prev
+        const btn = overlay.querySelector('[data-action="viewer-prev"]') as HTMLButtonElement;
+        if (btn && !btn.disabled) { btn.click(); }
+      } else if (dx < 0 && state.viewer && state.viewer.index < (state.viewer.posts.length - 1)) {
+        // swipe left = next
+        const btn = overlay.querySelector('[data-action="viewer-next"]') as HTMLButtonElement;
+        if (btn && !btn.disabled) { btn.click(); }
+      }
+    }
+  }, { passive: true });
+
+  overlay.addEventListener('touchend', () => {
+    isDragging = false;
+  }, { passive: true });
+
+  // Center play/pause for videos in viewer
+  const video = overlay.querySelector('.viewer-video') as HTMLVideoElement | null;
+  if (video) {
+    video.addEventListener('click', () => {
+      if (video.paused) {
+        void video.play().catch(() => {});
+      } else {
+        video.pause();
+        // Show a pause indicator overlay
+        showViewerPlayIndicator(overlay, 'paused');
+      }
+    });
+  }
+}
+
+function showViewerPlayIndicator(overlay: HTMLElement, state: string): void {
+  let ind = overlay.querySelector('.viewer-play-indicator') as HTMLElement | null;
+  if (!ind) {
+    ind = document.createElement('div');
+    ind.className = 'viewer-play-indicator';
+    ind.setAttribute('aria-hidden', 'true');
+    overlay.appendChild(ind);
+  }
+  ind.textContent = state === 'paused' ? 'II' : '';
+  ind.style.opacity = '1';
+  setTimeout(() => { ind.style.opacity = '0'; }, 800);
 }
 
 function openViewerForMedia(src: string, kind: string, origin: HTMLElement): void {
@@ -1414,7 +1541,7 @@ function openViewerForMedia(src: string, kind: string, origin: HTMLElement): voi
   if (card) {
     const pid = card.dataset.postCard || idOf(card);
     const idx = state.posts.findIndex(function(p) { return idOf(p) === pid; });
-    if (idx >= 0) openViewer([state.posts[idx]], 0);
+    if (idx >= 0) openViewer(state.posts, idx);
   }
 }
 
