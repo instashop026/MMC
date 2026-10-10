@@ -68,11 +68,12 @@ const state: {
   importModelId: string; storageBrowser: StorageBrowserSession | null; importReview: ImportReviewDraft | null;
   posts: AnyRecord[];
   viewer: { posts: AnyRecord[]; index: number } | null;
+  viewerSource: string;
 } = {
   user: null, profile: null, route: parseRoute(), search: '', filterType: '', filterModel: '',
   followed: new Set(), followedStyles: new Set(), modal: '', modalData: {}, error: '',
   styles: [], generation: 0,
-  importModelId: '', storageBrowser: null, importReview: null, posts: [], viewer: null,
+  importModelId: '', storageBrowser: null, importReview: null, posts: [], viewer: null, viewerSource: 'feed',
 };
 
 const root = document.querySelector<HTMLElement>('#root');
@@ -144,7 +145,7 @@ function icon(name: string): string {
     profile: '<circle cx="12" cy="8" r="4"/><path d="M5 21a7 7 0 0 1 14 0"/>',
     heart: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.8-7.5 1.1-1.1a5.5 5.5 0 0 0-.1-7.8z"/>',
     comment: '<path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8z"/>',
-    heartFill: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.8-7.5 1.1-1.1a5.5 5.5 0 0 0-.1-7.8z"/>',
+    heartFill: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.8-7.5 1.1-1.1a5.5 5.5 0 0 0-.1-7.8z" fill="currentColor" stroke="none"/>',
     bookmark: '<path d="M4 4v20l8-6 8 6V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2z"/>',
     bookmarkFill: '<path d="M4 4v20l8-6 8 6V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2z" fill="currentColor" stroke="none"/>',
     mmc: '<path d="M12 2l3 6h6l-4.5 4 1.5 6L12 16l-6 4 1.5-6L3 8h6z"/>',
@@ -214,10 +215,13 @@ function renderViewer(): string {
   const activeLike = bool(p, 'liked_by_me', 'likedByMe', 'is_liked', 'isLiked', 'liked');
   const activeSave = bool(p, 'saved_by_me', 'savedByMe', 'is_saved', 'isSaved', 'saved');
   const activeMmc = bool(p, 'mmc_by_me', 'mmcByMe', 'is_mmc', 'isMmc', 'mmc');
+  const isMuted = bool(p, 'is_muted', 'isMuted', 'muted');
+  const modelAvatar = modelImageUrl(model);
+  const modelSlugVal = modelSlug(model);
   let mediaHtml: string;
   if (media) {
     if (isVid) {
-      mediaHtml = `<video class="viewer-video" data-viewer-video muted playsinline preload="metadata" data-src="${esc(media)}" aria-label="Video by ${esc(title)}"><source src="${esc(media)}" type="video/mp4"></video>`;
+      mediaHtml = `<video class="viewer-video" data-viewer-video muted playsinline preload="metadata" loop aria-label="Video by ${esc(title)}"><source src="${esc(media)}" type="video/mp4"></video>`;
     } else {
       mediaHtml = `<img class="viewer-media" src="${esc(media)}" alt="${esc(str(p, 'alt_text', 'altText') || `Post by ${title}`)}" loading="eager">`;
     }
@@ -226,29 +230,31 @@ function renderViewer(): string {
   }
   const hasPrev = vIdx > 0;
   const hasNext = vIdx < posts.length - 1;
+  const showCounter = state.viewerSource === 'model';
   return `<div class="viewer-overlay" role="dialog" aria-modal="true" aria-label="Post viewer">
     <button class="viewer-close" data-action="close-viewer" aria-label="Close">${icon('close')}</button>
-    ${hasPrev ? `<button class="viewer-nav prev" data-action="viewer-prev" aria-label="Previous">&#8249;</button>` : ''}
-    ${hasNext ? `<button class="viewer-nav next" data-action="viewer-next" aria-label="Next">&#8250;</button>` : ''}
+    ${hasPrev ? `<button class="viewer-nav up" data-action="viewer-prev" aria-label="Previous">&#8249;</button>` : ''}
+    ${hasNext ? `<button class="viewer-nav down" data-action="viewer-next" aria-label="Next">&#8250;</button>` : ''}
+    <div class="viewer-header">
+      <div class="viewer-header-left">
+        ${modelAvatar ? `<img class="viewer-avatar" src="${esc(modelAvatar)}" alt="${esc(title)}">` : `<div class="viewer-avatar-placeholder">${esc(title.trim().slice(0,1).toUpperCase())}</div>`}
+        <span class="viewer-model-name">${esc(title)}</span>
+      </div>
+      <button class="btn btn-outline btn-small viewer-follow-btn" data-action="follow" data-id="${esc(idOf(model))}" aria-pressed="${state.followed.has(idOf(model))}">${state.followed.has(idOf(model)) ? 'Following' : 'Follow'}</button>
+    </div>
     <div class="viewer-media-wrap">
       ${mediaHtml}
-      <div class="viewer-bottom">
-        <div class="viewer-meta">
-          <span class="viewer-model-name">${esc(title)}</span>
-          <span class="viewer-counter">${vIdx + 1} / ${posts.length}</span>
-        </div>
-        <div class="viewer-caption">${esc(caption)}</div>
-        <div class="viewer-actions">
-          <button class="action-post" data-action="like" data-id="${esc(id)}" aria-pressed="${activeLike}">${activeLike ? icon('heartFill') : icon('heart')}<span class="count">${likes}</span></button>
-          <button class="action-post" data-action="mmc" data-id="${esc(id)}" aria-pressed="${activeMmc}">${icon('mmc')}</button>
-          <button class="action-post" data-action="save" data-id="${esc(id)}" aria-pressed="${activeSave}">${activeSave ? icon('bookmarkFill') : icon('bookmark')}</button>
-          <button class="action-post" data-action="comments" data-id="${esc(id)}">${icon('comment')}<span class="count">${comments}</span></button>
-        </div>
+      <div class="viewer-actions-bar">
+        <button class="action-post" data-action="like" data-id="${esc(id)}" aria-pressed="${activeLike}">${activeLike ? icon('heartFill') : icon('heart')}<span class="count">${likes}</span></button>
+        <button class="action-post" data-action="mmc" data-id="${esc(id)}" aria-pressed="${activeMmc}">${icon('mmc')}</button>
+        <button class="action-post" data-action="save" data-id="${esc(id)}" aria-pressed="${activeSave}">${activeSave ? icon('bookmarkFill') : icon('bookmark')}</button>
+        <button class="action-post" data-action="comments" data-id="${esc(id)}">${icon('comment')}<span class="count">${comments}</span></button>
       </div>
     </div>
+    <div class="viewer-caption">${esc(caption)}</div>
+    ${showCounter ? `<div class="viewer-counter">${vIdx + 1} / ${posts.length}</div>` : ''}
   </div>`;
-}
-function shell(content: string): string {
+}function shell(content: string): string {
   const admin = isAdmin();
   const showError = state.error && !content.includes('class="error-state"');
   return `<div class="shell"><div class="phone-column"><header class="topbar"><a href="/" class="wordmark" data-go="/">Model Feed</a><div class="top-actions">${admin ? `<button class="plain-button small" data-go="/admin">Admin</button>` : ''}<button class="icon-button" data-go="/me" aria-label="Your account">${icon('profile')}</button></div></header>${showError ? `<div class="notice error-notice" role="alert">${esc(state.error)}</div>` : ''}<main class="page">${content}</main><nav class="bottom-nav" aria-label="Primary navigation">${navItem('/', 'Feed', 'home')}${navItem('/explore', 'Explore', 'explore')}${navItem('/models', 'Models', 'models')}${navItem('/me', 'You', 'profile')}</nav></div></div>${modalMarkup()}${adminOverlayMarkup()}${viewerMarkup()}`;
@@ -277,10 +283,10 @@ function postCard(p: AnyRecord): string {
   const captionShowMore = words > 15;
   const isMuted = bool(p, 'is_muted', 'isMuted', 'muted');
   const mediaHtml = media ? (isVideo(p)
-    ? `<video data-feed-video muted playsinline preload="none" tabindex="0" data-src="${esc(media)}" aria-label="Video by ${esc(title)}. Activate to pause or play."></video>`
+    ? `<video data-feed-video muted playsinline preload="none" tabindex="0" data-src="${esc(media)}" poster="${esc(str(p, 'poster_url', 'posterUrl', 'thumbnail_url', 'thumbnailUrl') || media)}" aria-label="Video by ${esc(title)}. Tap to play or pause."></video>`
     : `<img loading="lazy" src="${esc(media)}" alt="${esc(str(p, 'alt_text', 'altText') || `Post by ${title}`)}" data-fullscreen="${esc(media)}" data-kind="${isVideo(p) ? 'video' : 'image'}" role="button" tabindex="0" aria-label="Open media fullscreen">`)
     : `<div class="media-placeholder"><span>Media unavailable</span></div>`;
-  return `<article class="post-card" data-post-card="${esc(id)}"><div class="post-media-wrap"><div class="post-media">${mediaHtml}<div class="post-creator"><a class="post-avatar" href="/models/${esc(slug)}" data-go="/models/${esc(slug)}" aria-label="${esc(title)}">${esc(title.trim().slice(0,1).toUpperCase())}</a><div class="post-creator-name">${esc(title)}</div><button class="post-follow-btn ${state.followed.has(id) ? 'following' : ''}" data-action="follow" data-id="${esc(id)}" aria-pressed="${state.followed.has(id)}">${state.followed.has(id) ? 'Following' : 'Follow'}</button></div><div class="post-actions"><button class="action-post" data-action="mmc" data-id="${esc(id)}" aria-pressed="${activeMmc}">${icon('mmc')}</button><button class="action-post ${activeLike ? 'active-like' : ''}" data-action="like" data-id="${esc(id)}" aria-pressed="${activeLike}">${activeLike ? icon('heartFill') : icon('heart')}<span class="count">${likes}</span></button><button class="action-post" data-action="comments" data-id="${esc(id)}">${icon('comment')}<span class="count">${comments}</span></button><button class="action-post ${activeSave ? 'active-save' : ''}" data-action="save" data-id="${esc(id)}" aria-pressed="${activeSave}">${activeSave ? icon('bookmarkFill') : icon('bookmark')}</button>${isVideo(p) ? `<button class="action-post ${isMuted ? 'active-mute' : ''}" data-action="mute" data-id="${esc(id)}" aria-label="Mute/unmute video">${isMuted ? icon('volumeOff') : icon('volume')}</button>` : ''}<button class="action-post full-screen-btn" data-fullscreen="${esc(media)}" data-kind="${isVideo(p) ? 'video' : 'image'}" aria-label="Fullscreen">${icon('fullscreen')}</button></div><div class="post-caption">${captionShowMore ? `<div class="caption-text short" data-full="${esc(caption)}">${esc(captionShort)}</div><button class="show-more" data-action="toggle-caption" data-id="${esc(id)}">Show more</button>` : `<p class="caption-text full">${esc(caption)}</p>`}</div></div></div></article>`;
+  return `<article class="post-card" data-post-card="${esc(id)}"><div class="post-media-wrap"><div class="post-media">${mediaHtml}<div class="post-creator"><a class="post-avatar" href="/models/${esc(slug)}" data-go="/models/${esc(slug)}" aria-label="${esc(title)}">${esc(title.trim().slice(0,1).toUpperCase())}</a><div class="post-creator-name">${esc(title)}</div><button class="post-follow-btn ${state.followed.has(id) ? 'following' : ''}" data-action="follow" data-id="${esc(idOf(model))}" aria-pressed="${state.followed.has(id)}">${state.followed.has(id) ? 'Following' : 'Follow'}</button></div><div class="post-actions"><button class="action-post" data-action="mmc" data-id="${esc(id)}" aria-pressed="${activeMmc}">${icon('mmc')}</button><button class="action-post ${activeLike ? 'active-like' : ''}" data-action="like" data-id="${esc(id)}" aria-pressed="${activeLike}">${activeLike ? icon('heartFill') : icon('heart')}<span class="count">${likes}</span></button><button class="action-post" data-action="comments" data-id="${esc(id)}">${icon('comment')}<span class="count">${comments}</span></button><button class="action-post ${activeSave ? 'active-save' : ''}" data-action="save" data-id="${esc(id)}" aria-pressed="${activeSave}">${activeSave ? icon('bookmarkFill') : icon('bookmark')}</button>${isVideo(p) ? `<button class="action-post ${isMuted ? 'active-mute' : ''}" data-action="mute" data-id="${esc(id)}" aria-label="Mute/unmute video">${isMuted ? icon('volumeOff') : icon('volume')}</button>` : ''}<button class="action-post full-screen-btn" data-fullscreen="${esc(media)}" data-kind="${isVideo(p) ? 'video' : 'image'}" aria-label="Fullscreen">${icon('fullscreen')}</button></div><div class="post-caption">${captionShowMore ? `<div class="caption-text short" data-full="${esc(caption)}">${esc(captionShort)}</div><button class="show-more" data-action="toggle-caption" data-id="${esc(id)}">Show more</button>` : `<p class="caption-text full">${esc(caption)}</p>`}</div></div></div></article>`;
 }
 function gridView(posts: AnyRecord[], source: string, options: { showOverlay?: boolean; showModelName?: boolean } = {}): string {
   const postsJson = esc(JSON.stringify(posts));
@@ -1085,28 +1091,28 @@ async function handleAction(button: HTMLElement): Promise<void> {
         await toggleLike(id);
         // Update viewer in-place if open
         const vEl = root!.querySelector('.viewer-overlay');
-        if (vEl && state.viewer && state.viewer.posts[state.viewer.index]) {
-          const vp = state.viewer.posts[state.viewer.index];
-          const activeLike = bool(vp, 'liked_by_me', 'likedByMe', 'is_liked', 'isLiked', 'liked');
-          const likeBtn = vEl.querySelector('[data-action="like"]');
-          if (likeBtn) likeBtn.setAttribute('aria-pressed', String(activeLike));
-          likeBtn?.replaceChildren(activeLike ? icon('heartFill') : icon('heart'));
-          const countSpan = likeBtn?.querySelector('.count');
-          if (countSpan) countSpan.textContent = String(num(vp, 'like_count', 'likeCount', 'likes_count'));
+        if (vEl) {
+          const newHtml = renderViewer();
+          vEl.outerHTML = newHtml;
+          observeMedia();
+          setupViewerInteractions();
+        } else {
+          await render();
         }
-        await render(); break;
+        break;
       }
       case 'mmc': {
         await toggleMMC(id);
         const vEl = root!.querySelector('.viewer-overlay');
-        if (vEl && state.viewer && state.viewer.posts[state.viewer.index]) {
-          const vp = state.viewer.posts[state.viewer.index];
-          const activeMmc = bool(vp, 'mmc_by_me', 'mmcByMe', 'is_mmc', 'isMmc', 'mmc');
-          const mmcBtn = vEl.querySelector('[data-action="mmc"]');
-          if (mmcBtn) mmcBtn.setAttribute('aria-pressed', String(activeMmc));
-          mmcBtn?.replaceChildren(icon('mmc'));
+        if (vEl) {
+          const newHtml = renderViewer();
+          vEl.outerHTML = newHtml;
+          observeMedia();
+          setupViewerInteractions();
+        } else {
+          await render();
         }
-        await render(); break;
+        break;
       }
       case 'follow': {
         if (!state.user) { go('/me'); toast('Sign in to follow a creator.'); break; }
@@ -1141,16 +1147,16 @@ async function handleAction(button: HTMLElement): Promise<void> {
       case 'save': {
         if (!id) break;
         await toggleSave(id);
-        // Update viewer in-place if open
         const vEl = root!.querySelector('.viewer-overlay');
-        if (vEl && state.viewer && state.viewer.posts[state.viewer.index]) {
-          const vp = state.viewer.posts[state.viewer.index];
-          const saved = bool(vp, 'saved_by_me', 'savedByMe', 'is_saved', 'isSaved', 'saved');
-          const saveBtn = vEl.querySelector('[data-action="save"]');
-          if (saveBtn) saveBtn.setAttribute('aria-pressed', String(saved));
-          saveBtn?.replaceChildren(saved ? icon('bookmarkFill') : icon('bookmark'));
+        if (vEl) {
+          const newHtml = renderViewer();
+          vEl.outerHTML = newHtml;
+          observeMedia();
+          setupViewerInteractions();
+        } else {
+          await render();
         }
-        await render(); break;
+        break;
       }
       case 'toggle-caption': {
         const card = button.closest('[data-post-card]');
@@ -1445,10 +1451,11 @@ let currentViewerPosts: AnyRecord[] | null = null;
 let currentViewerIndex = 0;
 let lastScrollY = 0;
 
-function openViewer(posts: AnyRecord[], startIndex: number): void {
+function openViewer(posts: AnyRecord[], startIndex: number, source = 'feed'): void {
   currentViewerPosts = posts;
   currentViewerIndex = startIndex;
   state.viewer = { posts, index: startIndex };
+  state.viewerSource = source;
   lastScrollY = window.scrollY;
   document.body.classList.add('body-locked');
   void render();
@@ -1486,18 +1493,18 @@ function setupViewerInteractions(): void {
     if (!isDragging || e.touches.length !== 1) return;
     const dx = e.touches[0].clientX - startX;
     const dy = e.touches[0].clientY - startY;
-    // Only trigger nav if horizontal drag is dominant
-    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > dragThreshold) {
+    // Vertical drag for navigation (Instagram-like: swipe up = next, swipe down = prev)
+    if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > dragThreshold) {
       const vid = overlay.querySelector('.viewer-video') as HTMLVideoElement;
       if (vid && !vid.paused) { vid.pause(); } // pause before navigating
       isDragging = false;
-      if (dx > 0 && state.viewer && state.viewer.index > 0) {
-        // swipe right = prev
-        const btn = overlay.querySelector('[data-action="viewer-prev"]') as HTMLButtonElement;
-        if (btn && !btn.disabled) { btn.click(); }
-      } else if (dx < 0 && state.viewer && state.viewer.index < (state.viewer.posts.length - 1)) {
-        // swipe left = next
+      if (dy < 0 && state.viewer && state.viewer.index < (state.viewer.posts.length - 1)) {
+        // swipe up = next
         const btn = overlay.querySelector('[data-action="viewer-next"]') as HTMLButtonElement;
+        if (btn && !btn.disabled) { btn.click(); }
+      } else if (dy > 0 && state.viewer && state.viewer.index > 0) {
+        // swipe down = prev
+        const btn = overlay.querySelector('[data-action="viewer-prev"]') as HTMLButtonElement;
         if (btn && !btn.disabled) { btn.click(); }
       }
     }
@@ -1507,15 +1514,18 @@ function setupViewerInteractions(): void {
     isDragging = false;
   }, { passive: true });
 
-  // Center play/pause for videos in viewer
+  // Auto-play and center tap-to-play/pause for videos in viewer
   const video = overlay.querySelector('.viewer-video') as HTMLVideoElement | null;
   if (video) {
+    void video.play().catch(() => {});
     video.addEventListener('click', () => {
       if (video.paused) {
         void video.play().catch(() => {});
+        // Remove pause indicator if visible
+        const ind = overlay.querySelector('.viewer-play-indicator') as HTMLElement | null;
+        if (ind) ind.style.opacity = '0';
       } else {
         video.pause();
-        // Show a pause indicator overlay
         showViewerPlayIndicator(overlay, 'paused');
       }
     });
@@ -1541,7 +1551,7 @@ function openViewerForMedia(src: string, kind: string, origin: HTMLElement): voi
   if (card) {
     const pid = card.dataset.postCard || idOf(card);
     const idx = state.posts.findIndex(function(p) { return idOf(p) === pid; });
-    if (idx >= 0) openViewer(state.posts, idx);
+    if (idx >= 0) openViewer(state.posts, idx, 'feed');
   }
 }
 
@@ -1550,7 +1560,7 @@ function openViewerFromGrid(postId: string, source: string, collection: string):
     const arr = collection ? JSON.parse(collection) : [];
     const ids = arr.map(function(p: any) { return idOf(p); });
     const idx = ids.indexOf(postId);
-    if (idx >= 0) openViewer(arr, idx);
+    if (idx >= 0) openViewer(arr, idx, source);
     else openViewer([state.posts.find(function(p: any) { return idOf(p) === postId; }) as AnyRecord].filter(Boolean), 0);
   } catch {
     openViewer(state.posts.filter(function(p) { return idOf(p) === postId; }), 0);
@@ -1583,13 +1593,10 @@ document.addEventListener('click', e => {
   }
   const gridTile = target.closest<HTMLElement>('[data-grid-tile]');
   if (gridTile) {
-    e.stopPropagation();
+    e.preventDefault();
     const postId = gridTile.dataset.gridTile || '';
     if (postId) {
-      const source = gridTile.dataset.gridSource || 'feed';
-      const collection = gridTile.dataset.gridPosts || '';
-      openViewerFromGrid(postId, source, collection);
-      e.preventDefault();
+      go('/post/' + postId);
     }
     return;
   }
