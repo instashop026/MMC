@@ -1,4 +1,9 @@
 -- Saved posts feature
+-- NOTE: For the SQL editor, this must be run as separate statements.
+-- The DROP FUNCTION before CREATE OR REPLACE is required because
+-- the return type changes (can't CREATE OR REPLACE with different signature).
+
+-- 1. Create saved_posts table
 create table if not exists public.saved_posts (
   user_id uuid not null references public.profiles (id) on delete cascade,
   post_id uuid not null references public.posts (id) on delete cascade,
@@ -6,12 +11,13 @@ create table if not exists public.saved_posts (
   primary key (user_id, post_id)
 );
 
+-- 2. Create indexes
 create index if not exists saved_posts_post_idx on public.saved_posts (post_id);
 create index if not exists saved_posts_user_idx on public.saved_posts (user_id);
 
--- Extend get_post_stats to include saved_by_me
--- Must DROP first since return type changes (can't CREATE OR REPLACE with different signature)
+-- 3. Update get_post_stats function (DROP first because return type changes)
 drop function if exists public.get_post_stats(uuid[]);
+
 create or replace function public.get_post_stats(post_ids uuid[])
 returns table (
   post_id uuid,
@@ -44,7 +50,7 @@ begin
     ),
     exists (
       select 1 from public.mmcs m
-      where m.post_id = p.id and m.user_id = auth.uid()
+      where m.post_id = p.id and l.user_id = auth.uid()
     ),
     exists (
       select 1 from public.saved_posts s
@@ -60,7 +66,7 @@ $$;
 revoke all on function public.get_post_stats(uuid[]) from public;
 grant execute on function public.get_post_stats(uuid[]) to anon, authenticated;
 
--- RLS for saved_posts
+-- 4. RLS for saved_posts
 alter table public.saved_posts enable row level security;
 
 drop policy if exists saved_posts_read_own on public.saved_posts;

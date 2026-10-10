@@ -283,7 +283,7 @@ function postCard(p: AnyRecord): string {
   const captionShowMore = words > 15;
   const isMuted = bool(p, 'is_muted', 'isMuted', 'muted');
   const mediaHtml = media ? (isVideo(p)
-    ? `<video data-feed-video muted playsinline preload="none" tabindex="0" data-src="${esc(media)}" poster="${esc(str(p, 'poster_url', 'posterUrl', 'thumbnail_url', 'thumbnailUrl') || media)}" aria-label="Video by ${esc(title)}. Tap to play or pause."></video>`
+    ? `<video data-feed-video muted playsinline preload="none" tabindex="0" data-src="${esc(media)}" poster="${esc(str(p, 'poster_url', 'posterUrl', 'thumbnail_url', 'thumbnailUrl') || media)}" aria-label="Video by ${esc(title)}. Tap to play or pause."><span class="post-video-play-indicator" aria-hidden="true">▶</span></video>`
     : `<img loading="lazy" src="${esc(media)}" alt="${esc(str(p, 'alt_text', 'altText') || `Post by ${title}`)}" data-fullscreen="${esc(media)}" data-kind="${isVideo(p) ? 'video' : 'image'}" role="button" tabindex="0" aria-label="Open media fullscreen">`)
     : `<div class="media-placeholder"><span>Media unavailable</span></div>`;
   return `<article class="post-card" data-post-card="${esc(id)}"><div class="post-media-wrap"><div class="post-media">${mediaHtml}<div class="post-creator"><a class="post-avatar" href="/models/${esc(slug)}" data-go="/models/${esc(slug)}" aria-label="${esc(title)}">${esc(title.trim().slice(0,1).toUpperCase())}</a><div class="post-creator-name">${esc(title)}</div><button class="post-follow-btn ${state.followed.has(id) ? 'following' : ''}" data-action="follow" data-id="${esc(idOf(model))}" aria-pressed="${state.followed.has(id)}">${state.followed.has(id) ? 'Following' : 'Follow'}</button></div><div class="post-actions"><button class="action-post" data-action="mmc" data-id="${esc(id)}" aria-pressed="${activeMmc}">${icon('mmc')}</button><button class="action-post ${activeLike ? 'active-like' : ''}" data-action="like" data-id="${esc(id)}" aria-pressed="${activeLike}">${activeLike ? icon('heartFill') : icon('heart')}<span class="count">${likes}</span></button><button class="action-post" data-action="comments" data-id="${esc(id)}">${icon('comment')}<span class="count">${comments}</span></button><button class="action-post ${activeSave ? 'active-save' : ''}" data-action="save" data-id="${esc(id)}" aria-pressed="${activeSave}">${activeSave ? icon('bookmarkFill') : icon('bookmark')}</button>${isVideo(p) ? `<button class="action-post ${isMuted ? 'active-mute' : ''}" data-action="mute" data-id="${esc(id)}" aria-label="Mute/unmute video">${isMuted ? icon('volumeOff') : icon('volume')}</button>` : ''}<button class="action-post full-screen-btn" data-fullscreen="${esc(media)}" data-kind="${isVideo(p) ? 'video' : 'image'}" aria-label="Fullscreen">${icon('fullscreen')}</button></div><div class="post-caption">${captionShowMore ? `<div class="caption-text short" data-full="${esc(caption)}">${esc(captionShort)}</div><button class="show-more" data-action="toggle-caption" data-id="${esc(id)}">Show more</button>` : `<p class="caption-text full">${esc(caption)}</p>`}</div></div></div></article>`;
@@ -1571,7 +1571,15 @@ document.addEventListener('click', e => {
   const target=e.target as HTMLElement;
   const video=target.closest<HTMLVideoElement>('video[data-feed-video]');
   if (video) {
-    if (video.paused) void video.play().catch(()=>{}); else video.pause();
+    const wrap = video.closest('.post-media');
+    const ind = wrap?.querySelector('.post-video-play-indicator') as HTMLElement | null;
+    if (video.paused) {
+      void video.play().catch(()=>{});
+      if (ind) ind.classList.remove('visible');
+    } else {
+      video.pause();
+      if (ind) { ind.classList.add('visible'); setTimeout(() => ind.classList.remove('visible'), 800); }
+    }
     return;
   }
   if (target.classList.contains('modal-backdrop')) {
