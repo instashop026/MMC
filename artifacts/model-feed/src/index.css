@@ -44,6 +44,7 @@ button, a, input, textarea, select { -webkit-tap-highlight-color: transparent; }
 .icon-button, .plain-button { border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 9px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; }
 .icon-button:hover, .plain-button:hover { background: var(--surface-raised); color: var(--text); }
 .icon-button svg, .action svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.6; }
+.icon-button.active svg { fill: currentColor; }
 .page { padding: 28px 22px 44px; animation: rise-in .34s ease both; }
 .page-head { margin: 0 0 25px; }
 .eyebrow { color: var(--gold); font-size: 10px; font-weight: 600; letter-spacing: .2em; text-transform: uppercase; display: block; margin-bottom: 9px; }
@@ -196,6 +197,10 @@ h1 { font-size: clamp(32px, 8vw, 48px); line-height: 1.07; margin-bottom: 10px; 
   pointer-events: auto;
 }
 .post-actions .action-post svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.6; pointer-events: none; }
+.post-actions .action-post.active-like svg,
+.post-actions .action-post.active-save svg { fill: currentColor; }
+.post-actions .action-post.active-like svg path[fill],
+.post-actions .action-post.active-save svg path[fill] { fill: currentColor; stroke: none; }
 .post-actions .action-post .count { font-size: 10px; color: var(--gold-light); margin-top: 2px; }
 .post-actions .action-post .label { font-size: 9px; color: var(--gold-light); text-transform: uppercase; letter-spacing: .05em; }
 .post-actions .action-post:hover { background: var(--surface-hover); border-color: var(--gold); }
@@ -577,6 +582,9 @@ h1 { font-size: clamp(32px, 8vw, 48px); line-height: 1.07; margin-bottom: 10px; 
   font-size: 10px;
   color: var(--gold-light);
 }
+.viewer-actions-bar .action-post svg { fill: none; stroke: currentColor; }
+.viewer-actions-bar .action-post.active-like svg,
+.viewer-actions-bar .action-post.active-save svg { fill: currentColor; stroke: none; }
 .viewer-caption {
   color: #c9c5bd;
   font-size: 13px;
