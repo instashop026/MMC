@@ -69,11 +69,12 @@ const state: {
   posts: AnyRecord[];
   viewer: { posts: AnyRecord[]; index: number } | null;
   viewerSource: string;
+  postNav: { posts: AnyRecord[]; index: number; source: string } | null;
 } = {
   user: null, profile: null, route: parseRoute(), search: '', filterType: '', filterModel: '',
   followed: new Set(), followedStyles: new Set(), modal: '', modalData: {}, error: '',
   styles: [], generation: 0,
-  importModelId: '', storageBrowser: null, importReview: null, posts: [], viewer: null, viewerSource: 'feed',
+  importModelId: '', storageBrowser: null, importReview: null, posts: [], viewer: null, viewerSource: 'feed', postNav: null,
 };
 
 const root = document.querySelector<HTMLElement>('#root');
@@ -100,10 +101,10 @@ function hasAny(obj: unknown, ...keys: string[]): boolean {
   return !!o && keys.some(key => o[key] !== undefined && o[key] !== null);
 }
 function publicPosts(posts: AnyRecord[]): AnyRecord[] {
-  return isAdmin() ? posts : posts.filter(p => !hasAny(p, 'published', 'is_published', 'isPublished') || bool(p, 'published', 'is_published', 'isPublished'));
+  return posts;
 }
 function publicModels(models: AnyRecord[]): AnyRecord[] {
-  return isAdmin() ? models : models.filter(m => !hasAny(m, 'published', 'is_published', 'isPublished') || bool(m, 'published', 'is_published', 'isPublished'));
+  return models;
 }
 function num(obj: unknown, ...keys: string[]): number {
   const raw = str(obj, ...keys);
@@ -367,9 +368,50 @@ async function pageStyle(slug: string): Promise<string> {
   return `${heading('Style',str(style,'name','title') || 'Style')}<div class="row-between spacer-top"><p class="page-intro">A collection of posts and creators with a shared point of view.</p><button class="btn btn-outline btn-small" data-action="style-follow" data-id="${esc(idOf(style))}" aria-pressed="${following}">${following?'Following style':'Follow style'}</button></div><div class="section-title"><h2>Creators in this style</h2></div><div class="model-grid">${models.length ? models.map(modelCard).join('') : stateBlock('empty','No creators are linked to this style yet.')}</div><div class="section-title"><h2>Posts in this style</h2></div><div class="feed">${posts.length ? posts.map(postCard).join('') : stateBlock('empty','No posts are linked to this style yet.')}</div>`;
 }
 async function pagePost(id: string): Promise<string> {
-  const p = await getPost(id);
-  if (!p) throw new Error('This post could not be found.');
-  return `${heading('From the feed','Post')}${postCard(p)}<div class="row-between spacer-top"><button class="btn btn-outline btn-small" data-action="comments" data-id="${esc(id)}">Read and add comments</button><button class="plain-button small" data-go="/">Back to feed</button></div>`;
+  // Use stored collection if available, otherwise load from feed
+  let posts: AnyRecord[] = [];
+  let idx = 0;
+  let source = 'feed';
+  let backHref = '/';
+  let backLabel = 'Feed';
+
+  if (state.postNav && state.postNav.posts.some((p: any) => idOf(p) === id)) {
+    posts = state.postNav.posts;
+    idx = state.postNav.posts.findIndex((p: any) => idOf(p) === id);
+    source = state.postNav.source;
+    if (source.startsWith('model:')) {
+      backHref = '/models/' + source.split(':')[1];
+      const model = posts[idx]?.model ?? posts[idx]?.models ?? {};
+      backLabel = modelName(model) || 'Creator';
+    }
+  } else if (state.route.segments[0] === 'models' && state.route.segments[1]) {
+    // Coming from model profile
+    const modelSlug = state.route.segments[1];
+    const model = await getModelDetail(modelSlug);
+    if (!model) throw new Error('This creator could not be found.');
+    posts = publicPosts(await loadPosts({ limit: 1000, offset: 0, modelId: idOf(model) }));
+    idx = posts.findIndex(p => idOf(p) === id);
+    if (idx < 0) throw new Error('This post could not be found.');
+    source = 'model:' + idOf(model);
+    backHref = '/models/' + esc(modelSlug);
+    backLabel = modelName(model) || 'Creator';
+  } else {
+    // Default: load from feed
+    posts = publicPosts(await loadPosts({ limit: 1000, offset: 0 }));
+    idx = posts.findIndex(p => idOf(p) === id);
+    if (idx < 0) {
+      const p = await getPost(id);
+      if (!p) throw new Error('This post could not be found.');
+      posts = [p];
+      idx = 0;
+    }
+  }
+
+  const hasPrev = idx > 0;
+  const hasNext = idx < posts.length - 1;
+  const navIcons = `<span class="post-view-nav"><button class="icon-button nav-btn" data-action="post-prev" aria-label="Previous" ${hasPrev ? '' : 'disabled'}>‹</button><button class="icon-button nav-btn" data-action="post-next" aria-label="Next" ${hasNext ? '' : 'disabled'}>›</button></span>`;
+  const title = source.startsWith('model:') ? modelName(posts[idx]?.model ?? posts[idx]?.models ?? {}) || 'Posts' : 'From the feed';
+  return `${heading(backLabel, 'Post', navIcons)}${postCard(posts[idx])}<div class="row-between spacer-top"><button class="btn btn-outline btn-small" data-action="comments" data-id="${esc(idOf(posts[idx]))}">Read and add comments</button><button class="plain-button small" data-go="${esc(backHref)}">Back to ${esc(backLabel)}</button></div>`;
 }
 async function profilePage(): Promise<string> {
   if (!state.user) return authPage();
@@ -567,6 +609,7 @@ async function render(): Promise<void> {
     root!.innerHTML = shell(content);
     observeMedia();
     if (state.viewer) setupViewerInteractions();
+    if (state.route.path === '/post' || state.route.segments[0] === 'post') setupPostNav();
     if (state.importReview || state.storageBrowser || state.modal) {
       const focusTarget = state.importReview
         ? root!.querySelector<HTMLElement>('.import-review-overlay button:not([disabled])')
@@ -1172,6 +1215,20 @@ async function handleAction(button: HTMLElement): Promise<void> {
         return;
       }
       case 'close-viewer': closeViewer(); return;
+      case 'post-prev': {
+        if (state.postNav && state.postNav.index > 0) {
+          state.postNav.index--;
+          go('/post/' + idOf(state.postNav.posts[state.postNav.index]));
+        }
+        break;
+      }
+      case 'post-next': {
+        if (state.postNav && state.postNav.index < state.postNav.posts.length - 1) {
+          state.postNav.index++;
+          go('/post/' + idOf(state.postNav.posts[state.postNav.index]));
+        }
+        break;
+      }
       case 'viewer-prev': {
         if (state.viewer && state.viewer.index > 0) {
           state.viewer.index--;
@@ -1532,6 +1589,50 @@ function setupViewerInteractions(): void {
   }
 }
 
+function setupPostNav(): void {
+  const nav = root!.querySelector('.post-view-nav');
+  if (!nav) return;
+  // Only attach if we have prev/next buttons
+  const prevBtn = nav.querySelector('[data-action="post-prev"]') as HTMLButtonElement | null;
+  const nextBtn = nav.querySelector('[data-action="post-next"]') as HTMLButtonElement | null;
+  if (!prevBtn && !nextBtn) return;
+
+  let startY = 0;
+  let isDragging = false;
+  const dragThreshold = 50;
+  const pageEl = root!;
+
+  pageEl.addEventListener('touchstart', (e: TouchEvent) => {
+    if (e.touches.length === 1) {
+      // Only start drag if touching the post-media area (not action buttons)
+      const target = e.target as HTMLElement;
+      if (target.closest('[data-action]') || target.closest('.post-actions') || target.closest('.post-caption')) return;
+      startY = e.touches[0].clientY;
+      isDragging = true;
+    }
+  }, { passive: true });
+
+  pageEl.addEventListener('touchmove', (e: TouchEvent) => {
+    if (!isDragging || e.touches.length !== 1) return;
+    const dy = e.touches[0].clientY - startY;
+    if (Math.abs(dy) > dragThreshold) {
+      // Pause any video before navigating
+      const vid = pageEl.querySelector('video[data-feed-video]') as HTMLVideoElement | null;
+      if (vid && !vid.paused) { vid.pause(); }
+      isDragging = false;
+      if (dy < 0 && nextBtn && !nextBtn.disabled) {
+        nextBtn.click();
+      } else if (dy > 0 && prevBtn && !prevBtn.disabled) {
+        prevBtn.click();
+      }
+    }
+  }, { passive: true });
+
+  pageEl.addEventListener('touchend', () => {
+    isDragging = false;
+  }, { passive: true });
+}
+
 function showViewerPlayIndicator(overlay: HTMLElement, state: string): void {
   let ind = overlay.querySelector('.viewer-play-indicator') as HTMLElement | null;
   if (!ind) {
@@ -1604,6 +1705,15 @@ document.addEventListener('click', e => {
     e.preventDefault();
     const postId = gridTile.dataset.gridTile || '';
     if (postId) {
+      // Store the collection for post navigation
+      const source = gridTile.dataset.gridSource || 'feed';
+      try {
+        const arr = JSON.parse(gridTile.dataset.gridPosts || '[]');
+        const idx = arr.findIndex((p: any) => idOf(p) === postId);
+        state.postNav = arr.length > 0 ? { posts: arr, index: idx >= 0 ? idx : 0, source } : null;
+      } catch {
+        state.postNav = null;
+      }
       go('/post/' + postId);
     }
     return;

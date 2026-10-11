@@ -598,6 +598,28 @@ h1 { font-size: clamp(32px, 8vw, 48px); line-height: 1.07; margin-bottom: 10px; 
   font-size: 13px;
   margin-top: 8px;
 }
+.post-view-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.post-view-nav .nav-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--line-soft);
+  background: rgba(255,255,255,.05);
+  color: var(--text);
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.post-view-nav .nav-btn:disabled {
+  opacity: .3;
+  cursor: default;
+}
 
 /* ── Body scroll lock ── */
 .body-locked {

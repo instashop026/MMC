@@ -60,8 +60,7 @@ begin
     )
   from public.posts p
   join public.models model on model.id = p.model_id
-  where p.id = any(coalesce(post_ids, '{}'::uuid[]))
-    and ((p.published and model.published) or public.is_admin());
+  where p.id = any(coalesce(post_ids, '{}'::uuid[]));
 end;
 $$;
 
