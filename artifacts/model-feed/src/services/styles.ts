@@ -113,7 +113,10 @@ export async function deleteStyle(id: string): Promise<void> {
   if (error) throw new Error(`Could not delete style: ${error.message}`);
 }
 
-export async function getStyleDetail(slug: string): Promise<StyleDetail | null> {
+export async function getStyleDetail(
+  slug: string,
+  { includePosts = true }: { includePosts?: boolean } = {},
+): Promise<StyleDetail | null> {
   const { data: style, error } = await getSupabase()
     .from("styles")
     .select("id,name,slug,created_at")
@@ -122,24 +125,20 @@ export async function getStyleDetail(slug: string): Promise<StyleDetail | null> 
   if (error) throw new Error(`Could not load this style: ${error.message}`);
   if (!style) return null;
 
-  const [modelsResult, postLinks] = await Promise.all([
+  const [modelsResult, posts] = await Promise.all([
     getSupabase()
       .from("model_styles")
       .select("model_id,models(id,name,username,slug,description,profile_image_url,profile_image_zerostorage_file_id,published,created_at,updated_at)")
       .eq("style_id", style.id),
-    getSupabase().from("post_styles").select("post_id").eq("style_id", style.id),
+    includePosts
+      ? listPosts({ limit: 24, offset: 0, styleId: style.id })
+      : Promise.resolve([] as Post[]),
   ]);
   if (modelsResult.error) throw new Error(`Could not load related models: ${modelsResult.error.message}`);
-  if (postLinks.error) throw new Error(`Could not load related posts: ${postLinks.error.message}`);
 
   const models = (modelsResult.data ?? []).flatMap((row) => {
     const related = row.models as unknown as Model | Model[] | null;
     return Array.isArray(related) ? related : related ? [related] : [];
-  });
-  const posts: Post[] = await listPosts({
-    limit: 24,
-    offset: 0,
-    postIds: (postLinks.data ?? []).map((row) => row.post_id as string),
   });
   return { ...(style as Style), models, posts };
 }

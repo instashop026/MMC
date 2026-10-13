@@ -57,10 +57,12 @@ export async function listPosts({
   postIds,
 }: ListPostsOptions): Promise<Post[]> {
   const client = getSupabase();
+  const columns = "id,model_id,content_source_id,type,zerostorage_file_id,filename,caption,source,source_path,published,created_at,updated_at";
   let query = client
     .from("posts")
-    .select("id,model_id,content_source_id,type,zerostorage_file_id,filename,caption,source,source_path,published,created_at,updated_at")
+    .select(styleId ? `${columns},post_styles!inner(style_id)` : columns)
     .order("created_at", { ascending: false })
+    .order("id", { ascending: true })
     .range(Math.max(0, offset), Math.max(0, offset) + Math.min(Math.max(limit, 1), 100) - 1);
 
   if (modelId) query = query.eq("model_id", modelId);
@@ -69,14 +71,7 @@ export async function listPosts({
   if (term) query = query.ilike("caption", `%${escapeSearch(term)}%`);
 
   if (styleId) {
-    const { data: links, error: styleError } = await client
-      .from("post_styles")
-      .select("post_id")
-      .eq("style_id", styleId);
-    if (styleError) throw new Error(`Could not filter posts by style: ${styleError.message}`);
-    const ids = (links ?? []).map((link) => link.post_id as string);
-    if (ids.length === 0) return [];
-    query = query.in("id", ids);
+    query = query.eq("post_styles.style_id", styleId);
   } else if (postIds) {
     if (postIds.length === 0) return [];
     query = query.in("id", postIds.slice(0, 100));
@@ -84,8 +79,13 @@ export async function listPosts({
 
   const { data, error } = await query;
   if (error) throw new Error(`Could not load posts: ${error.message}`);
-  const rows = (data ?? []) as Post[];
+  let rows = (data ?? []) as unknown as Post[];
   if (rows.length === 0) return [];
+  if (postIds) {
+    const position = new Map(postIds.map((id, index) => [id, index]));
+    rows = rows.sort((a, b) => (position.get(a.id) ?? Number.MAX_SAFE_INTEGER)
+      - (position.get(b.id) ?? Number.MAX_SAFE_INTEGER));
+  }
 
   const ids = rows.map((row) => row.id);
   const modelIds = [...new Set(rows.map((row) => row.model_id))];
@@ -134,7 +134,13 @@ export async function getPost(id: string): Promise<Post | null> {
   return posts[0] ?? null;
 }
 
-export async function listSavedPosts(): Promise<Post[]> {
+export async function listSavedPosts({
+  limit = 40,
+  offset = 0,
+}: {
+  limit?: number;
+  offset?: number;
+} = {}): Promise<Post[]> {
   const client = getSupabase();
   const { data: authData, error: authError } = await client.auth.getUser();
   if (authError || !authData.user) throw new Error("Sign in to view saved posts.");
@@ -143,11 +149,13 @@ export async function listSavedPosts(): Promise<Post[]> {
     .from("saved_posts")
     .select("post_id")
     .eq("user_id", userId)
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .order("post_id", { ascending: true })
+    .range(Math.max(0, offset), Math.max(0, offset) + Math.min(Math.max(limit, 1), 100) - 1);
   if (savedError) throw new Error(`Could not load saved posts: ${savedError.message}`);
   const postIds = (saved ?? []).map((row: { post_id: string }) => row.post_id);
   if (!postIds.length) return [];
-  return listPosts({ limit: 100, offset: 0, postIds });
+  return listPosts({ limit: Math.min(Math.max(limit, 1), 100), offset: 0, postIds });
 }
 
 export async function createPost(input: PostInput): Promise<Post> {

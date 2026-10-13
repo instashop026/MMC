@@ -10,7 +10,7 @@ import {
 import {
   listPosts, getPost, createPost, updatePost, deletePost, listComments, createComment, deleteComment, findImportedFileIds, listSavedPosts,
 } from './services/posts';
-import { toggleLike, toggleMMC, toggleSave, getSavedPostIds } from './services/interactions';
+import { toggleLike, toggleMMC, toggleSave } from './services/interactions';
 import {
   listStyles, getStyleDetail, createStyle, updateStyle, deleteStyle, findOrCreateStyle, normalizeStyleSlug,
 } from './services/styles';
@@ -18,7 +18,6 @@ import {
   collectMediaUnderFolder, listFiles, listFolders,
   revalidateZeroStorageFiles, sourceForPath,
 } from './services/zerostorage';
-import { getSupabase } from './services/supabase';
 import type {
   ZeroFile, ZeroFolder, ZeroStorageImportFile, ZeroStorageSelectedFolder,
 } from './services/zerostorage';
@@ -35,6 +34,28 @@ import type { ContentSource, MediaType } from './types/models';
 type AnyRecord = Record<string, any>;
 type Route = { path: string; segments: string[]; query: URLSearchParams };
 type ImportMode = 'profile' | 'gallery' | 'video' | 'post';
+type BrowseKind = 'feed' | 'explore' | 'model' | 'style' | 'saved' | 'direct';
+interface BrowseSource {
+  kind: BrowseKind;
+  returnTo: string;
+  modelId?: string;
+  styleId?: string;
+  type?: MediaType;
+  search?: string;
+}
+interface PostCollection {
+  source: BrowseSource;
+  posts: AnyRecord[];
+  startOffset: number;
+  hasMore: boolean;
+  loading: boolean;
+}
+interface ActivePost {
+  key: string;
+  source: BrowseSource;
+  index: number;
+}
+const COLLECTION_PAGE_SIZE = 30;
 
 interface StorageBrowserSession {
   mode: ImportMode;
@@ -66,16 +87,17 @@ const state: {
   followed: Set<string>; followedStyles: Set<string>; modal: string; modalData: AnyRecord;
   error: string; toastTimer?: number; styles: AnyRecord[]; generation: number;
   importModelId: string; storageBrowser: StorageBrowserSession | null; importReview: ImportReviewDraft | null;
-  posts: AnyRecord[];
-  viewer: { posts: AnyRecord[]; index: number } | null;
-  viewerSource: string;
-  postNav: { posts: AnyRecord[]; index: number; source: string } | null;
+  collections: Map<string, PostCollection>;
+  activePost: ActivePost | null;
+  videoMuted: boolean;
 } = {
   user: null, profile: null, route: parseRoute(), search: '', filterType: '', filterModel: '',
   followed: new Set(), followedStyles: new Set(), modal: '', modalData: {}, error: '',
   styles: [], generation: 0,
-  importModelId: '', storageBrowser: null, importReview: null, posts: [], viewer: null, viewerSource: 'feed', postNav: null,
+  importModelId: '', storageBrowser: null, importReview: null,
+  collections: new Map(), activePost: null, videoMuted: true,
 };
+const collectionLoads = new Map<string, Promise<PostCollection>>();
 
 const root = document.querySelector<HTMLElement>('#root');
 if (!root) throw new Error('Missing application root.');
@@ -150,17 +172,26 @@ function icon(name: string): string {
     bookmark: '<path d="M4 4v20l8-6 8 6V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2z"/>',
     bookmarkFill: '<path d="M4 4v20l8-6 8 6V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2z" fill="currentColor" stroke="none"/>',
     mmc: '<path d="M12 2l3 6h6l-4.5 4 1.5 6L12 16l-6 4 1.5-6L3 8h6z"/>',
+    mmcFill: '<path d="M12 2l3 6h6l-4.5 4 1.5 6L12 16l-6 4 1.5-6L3 8h6z" fill="currentColor" stroke="none"/>',
     volume: '<path d="M3 10v4h5l7 5V5L8 10z"/><path d="M15.5 12c0-.7-.2-1.4-.5-2l2-2a6 6 0 0 1 0 7.9l-2-2z"/>',
     volumeOff: '<path d="M3 10v4h5l7 5V5L8 10z"/><line x1="1" y1="1" x2="23" y2="23"/>',
-    fullscreen: '<path d="M8 3t0 4m-4 0H0M4 7l-4 4 4 4m-4-4h4m12-8h4m-4 0v4m0-4l4 4-4 4m0-4V3"/>',
     back: '<path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/>',
     close: '<line x1="18" y1="6" x2="18" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
   };
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || ''}</svg>`;
 }
 function go(path: string): void {
+  if (state.route.segments[0] === 'post' && !path.split('?')[0].startsWith('/post/')) {
+    disposeNormalVideo();
+    state.activePost = null;
+  }
+  history.replaceState({ ...history.state, scrollY: window.scrollY }, '', location.href);
   history.pushState({}, '', path);
-  state.route = parseRoute(); state.error = ''; window.scrollTo(0, 0); void render();
+  state.route = parseRoute();
+  state.search = state.route.query.get('search') || '';
+  state.error = '';
+  window.scrollTo(0, 0);
+  void render();
 }
 function toast(message: string): void {
   const old = document.querySelector('.toast'); old?.remove();
@@ -195,70 +226,264 @@ function navItem(path: string, label: string, ico: string): string {
   const active = state.route.path === path || (path !== '/' && state.route.path.startsWith(path));
   return `<button class="nav-item ${active ? 'active' : ''}" data-go="${path}" aria-label="${label}" ${active ? 'aria-current="page"' : ''}>${icon(ico)}<span>${label}</span></button>`;
 }
-function viewerMarkup(): string {
-  if (!state.viewer) return '';
-  return renderViewer();
+function currentRouteUrl(): string {
+  return `${location.pathname}${location.search}`;
 }
-function renderViewer(): string {
-  if (!state.viewer) return '';
-  const posts = state.viewer.posts;
-  const vIdx = state.viewer.index;
-  const p = posts[vIdx];
-  if (!p) return '';
-  const media = mediaUrl(p);
-  const isVid = isVideo(p);
-  const model = (p.model ?? p.models ?? {}) as AnyRecord;
-  const title = modelName(model);
-  const caption = postCaption(p) || '';
-  const id = idOf(p);
-  const likes = num(p, 'like_count', 'likeCount', 'likes_count');
-  const comments = num(p, 'comment_count', 'commentCount');
-  const activeLike = bool(p, 'liked_by_me', 'likedByMe', 'is_liked', 'isLiked', 'liked');
-  const activeSave = bool(p, 'saved_by_me', 'savedByMe', 'is_saved', 'isSaved', 'saved');
-  const activeMmc = bool(p, 'mmc_by_me', 'mmcByMe', 'is_mmc', 'isMmc', 'mmc');
-  const isMuted = bool(p, 'is_muted', 'isMuted', 'muted');
-  const modelAvatar = modelImageUrl(model);
-  const modelSlugVal = modelSlug(model);
-  let mediaHtml: string;
-  if (media) {
-    if (isVid) {
-      mediaHtml = `<video class="viewer-video" data-viewer-video muted playsinline preload="metadata" loop aria-label="Video by ${esc(title)}"><source src="${esc(media)}" type="video/mp4"></video>`;
-    } else {
-      mediaHtml = `<img class="viewer-media" src="${esc(media)}" alt="${esc(str(p, 'alt_text', 'altText') || `Post by ${title}`)}" loading="eager">`;
-    }
-  } else {
-    mediaHtml = `<div class="viewer-media media-placeholder"><span>Media unavailable</span></div>`;
+function currentBrowseSource(kind: BrowseKind, extras: Partial<BrowseSource> = {}): BrowseSource {
+  const source: BrowseSource = {
+    kind,
+    returnTo: currentRouteUrl(),
+    search: state.search.trim() || undefined,
+    ...extras,
+  };
+  return source;
+}
+function sourceKey(source: BrowseSource): string {
+  return JSON.stringify([
+    source.kind, source.returnTo, source.modelId || '', source.styleId || '',
+    source.type || '', source.search || '',
+  ]);
+}
+function sourceFromPostRoute(): BrowseSource | null {
+  const query = state.route.query;
+  const rawKind = query.get('source');
+  if (!rawKind || !['feed', 'explore', 'model', 'style', 'saved'].includes(rawKind)) return null;
+  const type = query.get('type');
+  return {
+    kind: rawKind as BrowseKind,
+    returnTo: query.get('returnTo') || '/',
+    modelId: query.get('modelId') || undefined,
+    styleId: query.get('styleId') || undefined,
+    type: type === 'image' || type === 'video' ? type : undefined,
+    search: query.get('search') || undefined,
+  };
+}
+async function fetchCollectionPage(
+  source: BrowseSource,
+  offset: number,
+  limit = COLLECTION_PAGE_SIZE + 1,
+): Promise<AnyRecord[]> {
+  const options = {
+    limit,
+    offset,
+    type: source.type,
+    search: source.search,
+  };
+  switch (source.kind) {
+    case 'feed':
+    case 'explore':
+      return publicPosts(await loadPosts(options));
+    case 'model':
+      if (!source.modelId) return [];
+      return publicPosts(await listPosts({ ...options, modelId: source.modelId }));
+    case 'style':
+      if (!source.styleId) return [];
+      return publicPosts(await listPosts({ ...options, styleId: source.styleId }));
+    case 'saved':
+      return publicPosts(await listSavedPosts({ limit, offset }));
+    case 'direct':
+    default:
+      return [];
   }
-  const hasPrev = vIdx > 0;
-  const hasNext = vIdx < posts.length - 1;
-  const showCounter = state.viewerSource === 'model';
-  return `<div class="viewer-overlay" role="dialog" aria-modal="true" aria-label="Post viewer">
-    <button class="viewer-close" data-action="close-viewer" aria-label="Close">${icon('close')}</button>
-    ${hasPrev ? `<button class="viewer-nav up" data-action="viewer-prev" aria-label="Previous">&#8249;</button>` : ''}
-    ${hasNext ? `<button class="viewer-nav down" data-action="viewer-next" aria-label="Next">&#8250;</button>` : ''}
-    <div class="viewer-header">
-      <div class="viewer-header-left">
-        ${modelAvatar ? `<img class="viewer-avatar" src="${esc(modelAvatar)}" alt="${esc(title)}">` : `<div class="viewer-avatar-placeholder">${esc(title.trim().slice(0,1).toUpperCase())}</div>`}
-        <span class="viewer-model-name">${esc(title)}</span>
+}
+async function getCollection(source: BrowseSource): Promise<PostCollection> {
+  const key = sourceKey(source);
+  const cached = state.collections.get(key);
+  if (cached) return cached;
+  const pending = collectionLoads.get(key);
+  if (pending) return pending;
+  const request = (async () => {
+    const rows = await fetchCollectionPage(source, 0);
+    const collection: PostCollection = {
+      source,
+      posts: rows.slice(0, COLLECTION_PAGE_SIZE),
+      startOffset: 0,
+      hasMore: rows.length > COLLECTION_PAGE_SIZE,
+      loading: false,
+    };
+    state.collections.set(key, collection);
+    return collection;
+  })();
+  collectionLoads.set(key, request);
+  try {
+    return await request;
+  } finally {
+    if (collectionLoads.get(key) === request) collectionLoads.delete(key);
+  }
+}
+function loadMoreButton(collection: PostCollection): string {
+  if (!collection.hasMore) return '';
+  return `<div class="collection-more"><button class="btn btn-outline btn-small" data-action="load-more" data-source="${esc(JSON.stringify(collection.source))}">Load more</button></div>`;
+}
+function browseTypeFilters(type?: MediaType): string {
+  const options: { value: '' | MediaType; label: string }[] = [
+    { value: '', label: 'All' },
+    { value: 'image', label: 'Images' },
+    { value: 'video', label: 'Videos' },
+  ];
+  return `<div class="browse-filters" role="group" aria-label="Filter posts by media">${options.map(option => `<button class="browse-filter ${type === option.value ? 'active' : ''}" data-action="browse-filter" data-value="${option.value}" aria-pressed="${type === option.value}">${option.label}</button>`).join('')}</div>`;
+}
+function postUrl(id: string, source: BrowseSource, absoluteIndex: number): string {
+  const query = new URLSearchParams({
+    source: source.kind,
+    returnTo: source.returnTo,
+    index: String(absoluteIndex),
+  });
+  if (source.modelId) query.set('modelId', source.modelId);
+  if (source.styleId) query.set('styleId', source.styleId);
+  if (source.type) query.set('type', source.type);
+  if (source.search) query.set('search', source.search);
+  return `/post/${encodeURIComponent(id)}?${query.toString()}`;
+}
+function openNormalPost(id: string, source: BrowseSource, absoluteIndex: number): void {
+  const key = sourceKey(source);
+  const collection = state.collections.get(key);
+  let index = collection ? absoluteIndex - collection.startOffset : -1;
+  if (collection && (index < 0 || index >= collection.posts.length || idOf(collection.posts[index]) !== id)) {
+    index = collection.posts.findIndex(post => idOf(post) === id);
+  }
+  state.activePost = { key, source, index: Math.max(0, index) };
+  history.replaceState({ ...history.state, scrollY: window.scrollY }, '', location.href);
+  history.pushState({ mmcNormal: true, returnTo: source.returnTo }, '', postUrl(id, source, absoluteIndex));
+  state.route = parseRoute();
+  state.error = '';
+  window.scrollTo(0, 0);
+  void render(0);
+}
+async function loadMoreCollection(source: BrowseSource): Promise<void> {
+  const collection = state.collections.get(sourceKey(source)) ?? await getCollection(source);
+  if (!collection.hasMore || collection.loading) return;
+  collection.loading = true;
+  const offset = collection.startOffset + collection.posts.length;
+  try {
+    const rows = await fetchCollectionPage(source, offset);
+    const seen = new Set(collection.posts.map(idOf));
+    collection.posts.push(...rows.slice(0, COLLECTION_PAGE_SIZE).filter(post => !seen.has(idOf(post))));
+    collection.hasMore = rows.length > COLLECTION_PAGE_SIZE;
+  } finally {
+    collection.loading = false;
+  }
+}
+function updateCollectionPost(postId: string, update: Partial<AnyRecord>): AnyRecord | null {
+  let found: AnyRecord | null = null;
+  for (const collection of state.collections.values()) {
+    for (const post of collection.posts) {
+      if (idOf(post) === postId) {
+        Object.assign(post, update);
+        found = post;
+      }
+    }
+  }
+  return found;
+}
+function refreshPostAction(postId: string, action: 'like' | 'mmc' | 'save'): void {
+  const post = [...state.collections.values()]
+    .flatMap(collection => collection.posts)
+    .find(item => idOf(item) === postId);
+  if (!post) return;
+  const selectors = document.querySelectorAll<HTMLButtonElement>(
+    `[data-action="${action}"][data-id="${CSS.escape(postId)}"]`,
+  );
+  for (const button of selectors) {
+    if (action === 'like') {
+      const active = bool(post, 'liked_by_me');
+      button.classList.toggle('active-like', active);
+      button.setAttribute('aria-pressed', String(active));
+      button.setAttribute('aria-label', active ? 'Unlike post' : 'Like post');
+      button.innerHTML = `${active ? icon('heartFill') : icon('heart')}<span class="count">${num(post, 'like_count')}</span>`;
+    } else if (action === 'mmc') {
+      const active = bool(post, 'mmc_by_me');
+      button.classList.toggle('active-mmc', active);
+      button.setAttribute('aria-pressed', String(active));
+      button.setAttribute('aria-label', active ? 'Remove MMC' : 'MMC this post');
+      button.innerHTML = `${active ? icon('mmcFill') : icon('mmc')}<span class="count">${num(post, 'mmc_count')}</span>`;
+    } else {
+      const active = bool(post, 'saved_by_me');
+      button.classList.toggle('active-save', active);
+      button.setAttribute('aria-pressed', String(active));
+      button.setAttribute('aria-label', active ? 'Remove from saved posts' : 'Save post');
+      button.innerHTML = active ? icon('bookmarkFill') : icon('bookmark');
+    }
+  }
+}
+function refreshFollowButtons(modelId: string): void {
+  const following = state.followed.has(modelId);
+  for (const button of document.querySelectorAll<HTMLButtonElement>(
+    `[data-action="follow"][data-id="${CSS.escape(modelId)}"]`,
+  )) {
+    button.classList.toggle('following', following);
+    button.setAttribute('aria-pressed', String(following));
+    button.textContent = following ? 'Following' : 'Follow';
+  }
+}
+function activeCollection(): PostCollection | null {
+  return state.activePost ? state.collections.get(state.activePost.key) ?? null : null;
+}
+function postActionButtons(post: AnyRecord, includeMute = false): string {
+  const id = idOf(post);
+  const liked = bool(post, 'liked_by_me', 'likedByMe', 'is_liked', 'isLiked', 'liked');
+  const mmc = bool(post, 'mmc_by_me', 'mmcByMe', 'is_mmc', 'isMmc', 'mmc');
+  const saved = bool(post, 'saved_by_me', 'savedByMe', 'is_saved', 'isSaved', 'saved');
+  return `<button class="action-post ${mmc ? 'active-mmc' : ''}" data-action="mmc" data-id="${esc(id)}" aria-label="${mmc ? 'Remove MMC' : 'MMC this post'}" aria-pressed="${mmc}">${mmc ? icon('mmcFill') : icon('mmc')}<span class="count">${num(post, 'mmc_count', 'mmcCount')}</span></button>
+    <button class="action-post ${liked ? 'active-like' : ''}" data-action="like" data-id="${esc(id)}" aria-label="${liked ? 'Unlike post' : 'Like post'}" aria-pressed="${liked}">${liked ? icon('heartFill') : icon('heart')}<span class="count">${num(post, 'like_count', 'likeCount', 'likes_count')}</span></button>
+    <button class="action-post" data-action="comments" data-id="${esc(id)}" aria-label="Open comments">${icon('comment')}<span class="count">${num(post, 'comment_count', 'commentCount')}</span></button>
+    <button class="action-post ${saved ? 'active-save' : ''}" data-action="save" data-id="${esc(id)}" aria-label="${saved ? 'Remove from saved posts' : 'Save post'}" aria-pressed="${saved}">${saved ? icon('bookmarkFill') : icon('bookmark')}</button>
+    ${includeMute && isVideo(post) ? `<button class="action-post ${state.videoMuted ? 'active-mute' : ''}" data-action="mute" data-id="${esc(id)}" aria-label="${state.videoMuted ? 'Unmute video' : 'Mute video'}" aria-pressed="${state.videoMuted}">${state.videoMuted ? icon('volumeOff') : icon('volume')}</button>` : ''}`;
+}
+function normalPostMarkup(): string {
+  const collection = activeCollection();
+  const active = state.activePost;
+  const post = collection && active ? collection.posts[active.index] : null;
+  if (!post || !collection || !active) return stateBlock('loading');
+
+  const id = idOf(post);
+  const media = mediaUrl(post);
+  const model = (post.model ?? post.models ?? {}) as AnyRecord;
+  const modelId = idOf(model) || str(post, 'model_id', 'modelId');
+  const slug = modelSlug(model);
+  const name = modelName(model);
+  const username = str(model, 'username', 'handle');
+  const avatar = modelImageUrl(model);
+  const caption = postCaption(post);
+  const prev = active.index > 0 || collection.startOffset > 0;
+  const next = active.index < collection.posts.length - 1 || collection.hasMore;
+  const styles = Array.isArray(post.styles) ? post.styles as AnyRecord[] : [];
+  const mediaMarkup = !media
+    ? `<div class="normal-media-placeholder" role="alert">Media is unavailable for this post.</div>`
+    : isVideo(post)
+      ? `<video class="normal-media normal-video" data-normal-video src="${esc(media)}" ${state.videoMuted ? 'muted' : ''} playsinline controls autoplay loop preload="auto" aria-label="Video by ${esc(name)}"></video>`
+      : `<img class="normal-media" data-normal-image src="${esc(media)}" alt="${esc(str(post, 'alt_text', 'altText') || `Post by ${name}`)}" loading="eager">`;
+
+  return `<article class="normal-post" data-normal-post="${esc(id)}" aria-label="Post by ${esc(name)}">
+    <div class="normal-media-stage">${mediaMarkup}<div class="normal-loading" data-media-loading aria-label="Loading media" ${media ? '' : 'hidden'}></div><div class="normal-media-error" data-media-error role="alert" hidden>Media could not be loaded.</div></div>
+    <header class="normal-header">
+      <button class="normal-close" data-action="close-normal" aria-label="Close post">${icon('back')}</button>
+      <a class="normal-creator" href="/models/${esc(slug)}" data-go="/models/${esc(slug)}">
+        ${avatar ? `<img class="normal-avatar" src="${esc(avatar)}" alt="">` : `<span class="normal-avatar normal-avatar-placeholder">${esc(name.slice(0, 1).toUpperCase())}</span>`}
+        <span class="normal-creator-copy"><strong>${esc(name)}</strong>${username ? `<small>@${esc(username.replace(/^@/, ''))}</small>` : ''}</span>
+      </a>
+      <button class="post-follow-btn ${state.followed.has(modelId) ? 'following' : ''}" data-action="follow" data-id="${esc(modelId)}" aria-pressed="${state.followed.has(modelId)}">${state.followed.has(modelId) ? 'Following' : 'Follow'}</button>
+    </header>
+    <div class="normal-actions" aria-label="Post actions">${postActionButtons(post, true)}</div>
+    <footer class="normal-footer">
+      <div class="normal-caption" data-caption="${esc(id)}">
+        <p class="normal-caption-text ${caption.length > 180 ? 'is-collapsed' : ''}" data-caption-text>${esc(caption)}</p>
+        ${caption.length > 180 ? `<button class="normal-caption-toggle" data-action="toggle-normal-caption" aria-expanded="false">More</button>` : ''}
+        ${styles.length ? `<div class="normal-tags">${styles.map(style => `<a class="chip" href="/styles/${esc(str(style, 'slug') || idOf(style))}" data-go="/styles/${esc(str(style, 'slug') || idOf(style))}">${esc(str(style, 'name', 'title'))}</a>`).join('')}</div>` : ''}
       </div>
-      <button class="btn btn-outline btn-small viewer-follow-btn" data-action="follow" data-id="${esc(idOf(model))}" aria-pressed="${state.followed.has(idOf(model))}">${state.followed.has(idOf(model)) ? 'Following' : 'Follow'}</button>
-    </div>
-    <div class="viewer-media-wrap">
-      ${mediaHtml}
-      <div class="viewer-actions-bar">
-        <button class="action-post" data-action="like" data-id="${esc(id)}" aria-pressed="${activeLike}">${activeLike ? icon('heartFill') : icon('heart')}<span class="count">${likes}</span></button>
-        <button class="action-post" data-action="mmc" data-id="${esc(id)}" aria-pressed="${activeMmc}">${icon('mmc')}</button>
-        <button class="action-post" data-action="save" data-id="${esc(id)}" aria-pressed="${activeSave}">${activeSave ? icon('bookmarkFill') : icon('bookmark')}</button>
-        <button class="action-post" data-action="comments" data-id="${esc(id)}">${icon('comment')}<span class="count">${comments}</span></button>
-      </div>
-    </div>
-    <div class="viewer-caption">${esc(caption)}</div>
-    ${showCounter ? `<div class="viewer-counter">${vIdx + 1} / ${posts.length}</div>` : ''}
-  </div>`;
-}function shell(content: string): string {
+      <span class="normal-source-label">${esc(collection.source.kind === 'direct' ? 'Post' : collection.source.kind === 'saved' ? 'Saved posts' : collection.source.kind === 'model' ? name : collection.source.kind === 'style' ? 'Style collection' : collection.source.kind === 'explore' ? 'Explore' : 'Feed')}</span>
+    </footer>
+    <button class="normal-nav normal-prev" data-action="post-prev" aria-label="Previous post" ${prev ? '' : 'disabled'}>${icon('back')}</button>
+    <button class="normal-nav normal-next" data-action="post-next" aria-label="Next post" ${next ? '' : 'disabled'}>${icon('back')}</button>
+    ${collection.loading ? `<span class="normal-nav-loading" role="status">Loading next post…</span>` : ''}
+    <span class="sr-only" aria-live="polite">${esc(name)} · ${esc(caption.slice(0, 100))}</span>
+  </article>`;
+}
+function shell(content: string): string {
   const admin = isAdmin();
   const showError = state.error && !content.includes('class="error-state"');
-  return `<div class="shell"><div class="phone-column"><header class="topbar"><a href="/" class="wordmark" data-go="/">Model Feed</a><div class="top-actions">${admin ? `<button class="plain-button small" data-go="/admin">Admin</button>` : ''}<button class="icon-button" data-go="/me" aria-label="Your account">${icon('profile')}</button></div></header>${showError ? `<div class="notice error-notice" role="alert">${esc(state.error)}</div>` : ''}<main class="page">${content}</main><nav class="bottom-nav" aria-label="Primary navigation">${navItem('/', 'Feed', 'home')}${navItem('/explore', 'Explore', 'explore')}${navItem('/models', 'Models', 'models')}${navItem('/me', 'You', 'profile')}</nav></div></div>${modalMarkup()}${adminOverlayMarkup()}${viewerMarkup()}`;
+  const normal = state.route.segments[0] === 'post';
+  return `<div class="shell ${normal ? 'shell-normal' : ''}"><div class="phone-column">${normal ? '' : `<header class="topbar"><a href="/" class="wordmark" data-go="/">Model Feed</a><div class="top-actions">${admin ? `<button class="plain-button small" data-go="/admin">Admin</button>` : ''}<button class="icon-button" data-go="/me" aria-label="Your account">${icon('profile')}</button></div></header>`}${showError ? `<div class="notice error-notice" role="alert">${esc(state.error)}</div>` : ''}<main class="page ${normal ? 'page-normal' : ''}">${content}</main>${normal ? '' : `<nav class="bottom-nav" aria-label="Primary navigation">${navItem('/', 'Feed', 'home')}${navItem('/explore', 'Explore', 'explore')}${navItem('/models', 'Models', 'models')}${navItem('/me', 'You', 'profile')}</nav>`}</div></div>${modalMarkup()}${adminOverlayMarkup()}`;
 }
 function isAdmin(): boolean {
   const p = state.profile as AnyRecord | null;
@@ -267,31 +492,37 @@ function isAdmin(): boolean {
 function heading(kicker: string, title: string, intro = ''): string {
   return `<header class="page-head"><span class="eyebrow">${esc(kicker)}</span><h1>${esc(title)}</h1>${intro ? `<p class="page-intro">${esc(intro)}</p>` : ''}</header>`;
 }
-function postCard(p: AnyRecord): string {
+function postCard(p: AnyRecord, source: BrowseSource, absoluteIndex: number): string {
   const id = idOf(p), media = mediaUrl(p), model = (p.model ?? p.models ?? {}) as AnyRecord;
   const title = modelName(model) || str(p, 'model_name', 'modelName') || 'Creator';
   const slug = modelSlug(model) || str(p, 'model_slug', 'modelSlug');
-  const activeLike = bool(p, 'liked_by_me', 'likedByMe', 'is_liked', 'isLiked', 'liked');
-  const activeSave = bool(p, 'saved_by_me', 'savedByMe', 'is_saved', 'isSaved', 'saved');
-  const activeMmc = bool(p, 'mmc_by_me', 'mmcByMe', 'is_mmc', 'isMmc', 'mmc');
-  const comments = num(p, 'comment_count', 'commentCount');
-  const likes = num(p, 'like_count', 'likeCount', 'likes_count');
   const caption = postCaption(p) || '';
   const words = caption.trim() ? caption.trim().split(/\s+/).length : 0;
   const captionShort = words > 15
     ? caption.trim().slice(0, 120) + ' …'
     : caption;
   const captionShowMore = words > 15;
-  const isMuted = bool(p, 'is_muted', 'isMuted', 'muted');
   const mediaHtml = media ? (isVideo(p)
-    ? `<video data-feed-video muted playsinline preload="none" tabindex="0" data-src="${esc(media)}" poster="${esc(str(p, 'poster_url', 'posterUrl', 'thumbnail_url', 'thumbnailUrl') || media)}" aria-label="Video by ${esc(title)}. Tap to play or pause."><span class="post-video-play-indicator" aria-hidden="true">▶</span></video>`
-    : `<img loading="lazy" src="${esc(media)}" alt="${esc(str(p, 'alt_text', 'altText') || `Post by ${title}`)}" data-fullscreen="${esc(media)}" data-kind="${isVideo(p) ? 'video' : 'image'}" role="button" tabindex="0" aria-label="Open media fullscreen">`)
+    ? `<video data-preview-video class="feed-video-preview" muted playsinline preload="none" data-src="${esc(media)}" ${str(p, 'poster_url', 'posterUrl', 'thumbnail_url', 'thumbnailUrl') ? `poster="${esc(str(p, 'poster_url', 'posterUrl', 'thumbnail_url', 'thumbnailUrl'))}"` : ''} aria-label="Video post by ${esc(title)}"></video>`
+    : `<img loading="lazy" src="${esc(media)}" alt="${esc(str(p, 'alt_text', 'altText') || `Post by ${title}`)}">`)
     : `<div class="media-placeholder"><span>Media unavailable</span></div>`;
-  return `<article class="post-card" data-post-card="${esc(id)}"><div class="post-media-wrap"><div class="post-media">${mediaHtml}<div class="post-creator"><a class="post-avatar" href="/models/${esc(slug)}" data-go="/models/${esc(slug)}" aria-label="${esc(title)}">${esc(title.trim().slice(0,1).toUpperCase())}</a><div class="post-creator-name">${esc(title)}</div><button class="post-follow-btn ${state.followed.has(id) ? 'following' : ''}" data-action="follow" data-id="${esc(idOf(model))}" aria-pressed="${state.followed.has(id)}">${state.followed.has(id) ? 'Following' : 'Follow'}</button></div><div class="post-actions"><button class="action-post" data-action="mmc" data-id="${esc(id)}" aria-pressed="${activeMmc}">${icon('mmc')}</button><button class="action-post ${activeLike ? 'active-like' : ''}" data-action="like" data-id="${esc(id)}" aria-pressed="${activeLike}">${activeLike ? icon('heartFill') : icon('heart')}<span class="count">${likes}</span></button><button class="action-post" data-action="comments" data-id="${esc(id)}">${icon('comment')}<span class="count">${comments}</span></button><button class="action-post ${activeSave ? 'active-save' : ''}" data-action="save" data-id="${esc(id)}" aria-pressed="${activeSave}">${activeSave ? icon('bookmarkFill') : icon('bookmark')}</button>${isVideo(p) ? `<button class="action-post ${isMuted ? 'active-mute' : ''}" data-action="mute" data-id="${esc(id)}" aria-label="Mute/unmute video">${isMuted ? icon('volumeOff') : icon('volume')}</button>` : ''}<button class="action-post full-screen-btn" data-fullscreen="${esc(media)}" data-kind="${isVideo(p) ? 'video' : 'image'}" aria-label="Fullscreen">${icon('fullscreen')}</button></div><div class="post-caption">${captionShowMore ? `<div class="caption-text short" data-full="${esc(caption)}">${esc(captionShort)}</div><button class="show-more" data-action="toggle-caption" data-id="${esc(id)}">Show more</button>` : `<p class="caption-text full">${esc(caption)}</p>`}</div></div></div></article>`;
+  const modelId = idOf(model) || str(p, 'model_id', 'modelId');
+  const followed = state.followed.has(modelId);
+  return `<article class="post-card" data-post-card="${esc(id)}">
+    <div class="post-media-wrap">
+      <button class="post-media post-media-open" data-open-post="${esc(id)}" data-source="${esc(JSON.stringify(source))}" data-index="${absoluteIndex}" aria-label="Open post by ${esc(title)}">${mediaHtml}</button>
+      <div class="post-creator"><a class="post-avatar" href="/models/${esc(slug)}" data-go="/models/${esc(slug)}" aria-label="Open ${esc(title)}'s profile">${esc(title.trim().slice(0,1).toUpperCase())}</a><a class="post-creator-name" href="/models/${esc(slug)}" data-go="/models/${esc(slug)}">${esc(title)}</a><button class="post-follow-btn ${followed ? 'following' : ''}" data-action="follow" data-id="${esc(modelId)}" aria-pressed="${followed}">${followed ? 'Following' : 'Follow'}</button></div>
+      <div class="post-actions" aria-label="Post actions">${postActionButtons(p)}</div>
+      <div class="post-caption">${captionShowMore ? `<div class="caption-text short" data-full="${esc(caption)}">${esc(captionShort)}</div><button class="show-more" data-action="toggle-caption" data-id="${esc(id)}">Show more</button>` : `<p class="caption-text full">${esc(caption)}</p>`}</div>
+    </div>
+  </article>`;
 }
-function gridView(posts: AnyRecord[], source: string, options: { showOverlay?: boolean; showModelName?: boolean } = {}): string {
-  const postsJson = esc(JSON.stringify(posts));
-  return `<div class="grid-view">${posts.map(p => {
+function gridView(
+  collection: PostCollection,
+  options: { showModelName?: boolean } = {},
+): string {
+  const source = collection.source;
+  return `<div class="grid-view">${collection.posts.map((p, index) => {
     const id = idOf(p);
     const media = mediaUrl(p);
     const isVid = isVideo(p);
@@ -301,7 +532,7 @@ function gridView(posts: AnyRecord[], source: string, options: { showOverlay?: b
     if (media) {
       if (isVid) {
         const poster = str(p, 'poster_url', 'posterUrl', 'thumbnail_url', 'thumbnailUrl');
-        mediaHtml = `<video class="grid-video" muted preload="none" poster="${esc(poster || media)}" aria-label="${esc(name || 'Video')}"><source src="${esc(media)}" type="video/mp4"></video>`;
+        mediaHtml = `<video class="grid-video" data-preview-video data-src="${esc(media)}" muted playsinline preload="none" ${poster ? `poster="${esc(poster)}"` : ''} aria-label="Video post by ${esc(name || 'creator')}"></video><span class="grid-video-mark" aria-hidden="true">▶</span>`;
       } else {
         mediaHtml = `<img loading="lazy" src="${esc(media)}" alt="${esc(str(p, 'alt_text', 'altText') || 'Post by ' + name)}">`;
       }
@@ -309,7 +540,8 @@ function gridView(posts: AnyRecord[], source: string, options: { showOverlay?: b
       mediaHtml = `<div class="media-placeholder"><span>Media unavailable</span></div>`;
     }
     const overlay = options.showModelName && name ? `<div class="grid-overlay">${esc(name)}</div>` : '';
-    return `<div class="grid-tile" data-grid-tile="${esc(id)}" data-grid-source="${esc(source)}" data-grid-posts="${postsJson}" data-post-card="${esc(id)}">${mediaHtml}${overlay}</div>`;
+    const absoluteIndex = collection.startOffset + index;
+    return `<a class="grid-tile" href="${esc(postUrl(id, source, absoluteIndex))}" data-open-post="${esc(id)}" data-source="${esc(JSON.stringify(source))}" data-index="${absoluteIndex}" aria-label="Open post ${absoluteIndex + 1} by ${esc(name)}">${mediaHtml}${overlay}</a>`;
   }).join('')}</div>`;
 }
 function modelCard(m: AnyRecord): string {
@@ -317,101 +549,121 @@ function modelCard(m: AnyRecord): string {
   const image = modelImageUrl(m);
   const followerIds = state.followed;
   const following = followerIds.has(idOf(m)) || bool(m, 'is_following', 'isFollowing', 'following');
-  return `<article class="model-tile"><a href="/models/${esc(slug)}" data-go="/models/${esc(slug)}"><div class="model-image">${image ? `<img loading="lazy" src="${esc(image)}" alt="creator avatar">` : `<div class="media-placeholder"><span>${esc(name.trim().slice(0,1).toUpperCase())}</span></div>`}</div><div class="model-info" style="padding-top:0"><button class="btn btn-outline btn-small btn-block" data-action="follow" data-id="${esc(idOf(m))}" aria-pressed="${following}">${following ? 'Following' : 'Follow'}</button></div></a></article>`;
+  return `<article class="model-tile"><a class="model-image" href="/models/${esc(slug)}" data-go="/models/${esc(slug)}">${image ? `<img loading="lazy" src="${esc(image)}" alt="${esc(name)}">` : `<div class="media-placeholder"><span>${esc(name.trim().slice(0,1).toUpperCase())}</span></div>`}</a><div class="model-info"><a href="/models/${esc(slug)}" data-go="/models/${esc(slug)}"><strong>${esc(name)}</strong></a><button class="btn btn-outline btn-small btn-block" data-action="follow" data-id="${esc(idOf(m))}" aria-pressed="${following}">${following ? 'Following' : 'Follow'}</button></div></article>`;
 }
 function searchField(placeholder: string): string {
   return `<div class="search-box"><input type="search" value="${esc(state.search)}" placeholder="${esc(placeholder)}" aria-label="${esc(placeholder)}" data-search></div>`;
 }
-async function loadPosts(args: {limit:number;offset:number;modelId?:string;type?:MediaType;search?:string}): Promise<AnyRecord[]> {
+async function loadPosts(args: {limit:number;offset:number;modelId?:string;type?:MediaType;search?:string;styleId?:string}): Promise<AnyRecord[]> {
   return list(await listPosts(args));
 }
 async function loadModels(search = '', limit = 60): Promise<AnyRecord[]> {
   return list(await listModels({ search: search || undefined, limit, offset: 0 }));
 }
 async function pageFeed(): Promise<string> {
-  const posts = publicPosts(await loadPosts({ limit: 1000, offset: 0, search: state.search || undefined }));
-  return `${heading('A closer look', 'The feed', 'Recent work from across the creator community.')}${searchField('Search the feed')}<div class="feed">${posts.length ? posts.map(postCard).join('') : stateBlock('empty', 'New posts will appear here.')}</div>`;
+  const source = currentBrowseSource('feed');
+  const collection = await getCollection(source);
+  return `${heading('A closer look', 'The feed', 'Recent work from across the creator community.')}${searchField('Search the feed')}<div class="feed">${collection.posts.length ? collection.posts.map((post, index) => postCard(post, source, collection.startOffset + index)).join('') : stateBlock('empty', 'New posts will appear here.')}</div>${loadMoreButton(collection)}`;
 }
 async function pageExplore(): Promise<string> {
-  const [posts, models, styles] = await Promise.all([loadPosts({limit:1000,offset:0,search:state.search || undefined}), loadModels(state.search), listStyles({limit:24,offset:0})]);
-  const visiblePosts = publicPosts(posts);
+  const source = currentBrowseSource('explore');
+  const [collection, models, styles] = await Promise.all([getCollection(source), loadModels(state.search), listStyles({limit:24,offset:0})]);
   const visibleModels = publicModels(models);
   const styleItems=list(styles);
   const firstRow = visibleModels.slice(0,6).map(modelCard).join('');
   const secondRow = visibleModels.slice(6,12).map(modelCard).join('');
-  return `${heading('Find your point of view', 'Explore', 'A considered collection of new work from across the community.')}${searchField('Search creators or posts')}<div class="section-title"><h2>Creators</h2><a href="/models" data-go="/models">All models</a></div><div class="model-grid">${firstRow}${secondRow}</div><div class="section-title"><h2>Styles</h2><a href="/styles" data-go="/styles">Browse all</a></div><div class="chips">${styleItems.slice(0,6).map(s=>`<a class="chip" href="/styles/${esc(str(s,'slug')||idOf(s))}" data-go="/styles/${esc(str(s,'slug')||idOf(s))}">${esc(str(s,'name','title'))}</a>`).join('') || '<span class="muted small">No styles yet.</span>'}</div><div class="section-title"><h2>Recent posts</h2></div>${visiblePosts.length ? gridView(visiblePosts, 'explore', { showModelName: true }) : stateBlock('empty','New posts will appear here.')}</div>`;
+  return `${heading('Find your point of view', 'Explore', 'Discover creators, styles and recent work.')}${searchField('Search creators or posts')}<div class="section-title"><h2>Creators</h2><a href="/models" data-go="/models">All models</a></div><div class="model-grid">${firstRow}${secondRow}</div><div class="section-title"><h2>Styles</h2><a href="/styles" data-go="/styles">Browse all</a></div><div class="chips">${styleItems.slice(0,6).map(s=>`<a class="chip" href="/styles/${esc(str(s,'slug')||idOf(s))}" data-go="/styles/${esc(str(s,'slug')||idOf(s))}">${esc(str(s,'name','title'))}</a>`).join('') || '<span class="muted small">No styles yet.</span>'}</div><div class="section-title"><h2>Recent posts</h2></div>${collection.posts.length ? gridView(collection, { showModelName: true }) : stateBlock('empty','New posts will appear here.')}${loadMoreButton(collection)}`;
 }
 async function pageModels(): Promise<string> {
   const models = publicModels(await loadModels(state.search));
   return `${heading('People to know', 'Models', 'Follow the creators whose work you want to return to.')}${searchField('Search models')}<div class="model-grid">${models.length ? models.map(modelCard).join('') : stateBlock('empty','Try another search, or check back soon.')}</div>`;
 }
 async function pageModel(slug: string): Promise<string> {
-  const model = await getModelDetail(slug);
+  const model = await getModelDetail(slug, { includePosts: false });
   if (!model) throw new Error('This creator profile could not be found.');
   if (!isAdmin() && hasAny(model,'published','is_published','isPublished') && !bool(model,'published','is_published','isPublished')) throw new Error('This creator profile is not available.');
-  const id = idOf(model), posts = publicPosts(await loadPosts({limit:1000,offset:0,modelId:id}));
+  const id = idOf(model);
+  const rawType = state.route.query.get('type');
+  const type = rawType === 'image' || rawType === 'video' ? rawType : undefined;
+  const source = currentBrowseSource('model', { modelId: id, type });
+  const collection = await getCollection(source);
   const name = modelName(model), followed = state.followed.has(id) || bool(model,'is_following','isFollowing','following');
   const image = modelImageUrl(model);
   const styles = Array.isArray(model.styles) ? model.styles as AnyRecord[] : [];
-  return `<section class="model-profile">${image ? `<img class="avatar" style="object-fit:cover" src="${esc(image)}" alt="${esc(name)}">` : `<div class="avatar">${esc(name.slice(0,1).toUpperCase())}</div>`}<div style="flex:1"><span class="eyebrow">Creator</span><h1>${esc(name)}</h1><span class="muted small">${esc(str(model,'location','handle'))}</span></div><button class="btn btn-outline btn-small" data-action="follow" data-id="${esc(id)}" aria-pressed="${followed}">${followed?'Following':'Follow'}</button></section><p class="model-bio">${esc(str(model,'bio','description'))}</p>${styles.length ? `<div class="chips spacer-top">${styles.map(s=>`<a class="chip" href="/styles/${esc(str(s,'slug')||idOf(s))}" data-go="/styles/${esc(str(s,'slug')||idOf(s))}">${esc(str(s,'name','title'))}</a>`).join('')}</div>`:''}<div class="section-title"><h2>Posts</h2><span class="muted small">${posts.length} shared</span></div><div class="grid-posts">${posts.length ? gridView(posts, 'model:${esc(id)}', { showModelName: false }) : stateBlock('empty','This creator has not shared any posts yet.')}</div>`;
+  const username = str(model, 'username');
+  return `<section class="model-profile">
+    ${image ? `<img class="avatar model-profile-image" src="${esc(image)}" alt="${esc(name)}">` : `<div class="avatar model-profile-image">${esc(name.slice(0,1).toUpperCase())}</div>`}
+    <div class="model-profile-copy"><span class="eyebrow">Creator</span><h1>${esc(name)}</h1>${username ? `<p class="model-username">@${esc(username.replace(/^@/,''))}</p>` : ''}<div class="model-counts"><span>${model.image_count} images</span><span>${model.video_count} videos</span></div></div>
+    <button class="btn btn-outline btn-small" data-action="follow" data-id="${esc(id)}" aria-pressed="${followed}">${followed?'Following':'Follow'}</button>
+  </section>
+  ${str(model,'description','bio') ? `<p class="model-bio">${esc(str(model,'description','bio'))}</p>` : ''}
+  ${styles.length ? `<div class="chips spacer-top">${styles.map(style=>`<a class="chip" href="/styles/${esc(str(style,'slug')||idOf(style))}" data-go="/styles/${esc(str(style,'slug')||idOf(style))}">${esc(str(style,'name','title'))}</a>`).join('')}</div>`:''}
+  <div class="section-title"><h2>Posts</h2></div>${browseTypeFilters(type)}
+  <div class="grid-posts">${collection.posts.length ? gridView(collection) : stateBlock('empty','No posts match this filter.')}</div>${loadMoreButton(collection)}`;
 }
 async function pageStyles(): Promise<string> {
   const styles = list(await listStyles({limit:100,offset:0}));
   return `${heading('A language of its own', 'Styles', 'Browse work by mood, medium and point of view.')}<div class="table-list">${styles.length ? styles.map(s=>`<a class="admin-link" href="/styles/${esc(str(s,'slug')||idOf(s))}" data-go="/styles/${esc(str(s,'slug')||idOf(s))}"><span>${esc(str(s,'name','title'))}</span><small>${esc(str(s,'description'))}</small></a>`).join('') : stateBlock('empty','Styles will appear here once they are added.')}</div>`;
 }
 async function pageStyle(slug: string): Promise<string> {
-  const style = await getStyleDetail(slug) as AnyRecord;
+  const style = await getStyleDetail(slug, { includePosts: false }) as AnyRecord;
   if (!style) throw new Error('This style could not be found.');
   const models = Array.isArray(style.models) ? style.models as AnyRecord[] : [];
-  const posts = publicPosts(Array.isArray(style.posts) ? style.posts as AnyRecord[] : []);
+  const rawType = state.route.query.get('type');
+  const type = rawType === 'image' || rawType === 'video' ? rawType : undefined;
+  const source = currentBrowseSource('style', { styleId: idOf(style), type });
+  const collection = await getCollection(source);
   const following = state.followedStyles.has(idOf(style));
-  return `${heading('Style',str(style,'name','title') || 'Style')}<div class="row-between spacer-top"><p class="page-intro">A collection of posts and creators with a shared point of view.</p><button class="btn btn-outline btn-small" data-action="style-follow" data-id="${esc(idOf(style))}" aria-pressed="${following}">${following?'Following style':'Follow style'}</button></div><div class="section-title"><h2>Creators in this style</h2></div><div class="model-grid">${models.length ? models.map(modelCard).join('') : stateBlock('empty','No creators are linked to this style yet.')}</div><div class="section-title"><h2>Posts in this style</h2></div><div class="feed">${posts.length ? posts.map(postCard).join('') : stateBlock('empty','No posts are linked to this style yet.')}</div>`;
+  return `${heading('Style',str(style,'name','title') || 'Style')}<div class="row-between spacer-top"><p class="page-intro">Browse posts and creators grouped by this style.</p><button class="btn btn-outline btn-small" data-action="style-follow" data-id="${esc(idOf(style))}" aria-pressed="${following}">${following?'Following style':'Follow style'}</button></div><div class="section-title"><h2>Creators in this style</h2></div><div class="model-grid">${models.length ? models.map(modelCard).join('') : stateBlock('empty','No creators are linked to this style yet.')}</div><div class="section-title"><h2>Posts in this style</h2></div>${browseTypeFilters(type)}<div class="grid-posts">${collection.posts.length ? gridView(collection) : stateBlock('empty','No posts are linked to this style.')}</div>${loadMoreButton(collection)}`;
 }
 async function pagePost(id: string): Promise<string> {
-  // Use stored collection if available, otherwise load from feed
-  let posts: AnyRecord[] = [];
-  let idx = 0;
-  let source = 'feed';
-  let backHref = '/';
-  let backLabel = 'Feed';
+  let source = sourceFromPostRoute();
+  const routeIndex = Number(state.route.query.get('index') || 0);
+  const queryIndex = Number.isSafeInteger(routeIndex) && routeIndex >= 0 ? routeIndex : 0;
+  if (!source) source = { kind: 'direct', returnTo: '/' };
+  const key = sourceKey(source);
+  let collection = state.collections.get(key);
+  let index = state.activePost?.key === key ? state.activePost.index : -1;
 
-  if (state.postNav && state.postNav.posts.some((p: any) => idOf(p) === id)) {
-    posts = state.postNav.posts;
-    idx = state.postNav.posts.findIndex((p: any) => idOf(p) === id);
-    source = state.postNav.source;
-    if (source.startsWith('model:')) {
-      backHref = '/models/' + source.split(':')[1];
-      const model = posts[idx]?.model ?? posts[idx]?.models ?? {};
-      backLabel = modelName(model) || 'Creator';
+  if (!collection || index < 0 || idOf(collection.posts[index]) !== id) {
+    if (source.kind === 'direct') {
+      const post = await getPost(id);
+      if (!post) throw new Error('This post could not be found.');
+      collection = { source, posts: [post], startOffset: 0, hasMore: false, loading: false };
+      index = 0;
+    } else {
+      const startOffset = Math.floor(Math.max(0, queryIndex) / COLLECTION_PAGE_SIZE) * COLLECTION_PAGE_SIZE;
+      const rows = await fetchCollectionPage(source, startOffset);
+      const posts = rows.slice(0, COLLECTION_PAGE_SIZE);
+      index = Math.max(0, queryIndex - startOffset);
+      if (idOf(posts[index]) !== id) {
+        const actualIndex = posts.findIndex(post => idOf(post) === id);
+        if (actualIndex >= 0) index = actualIndex;
+        else {
+          const post = await getPost(id);
+          if (!post) throw new Error('This post could not be found in its source collection.');
+          source = { kind: 'direct', returnTo: source.returnTo };
+          index = 0;
+          collection = { source, posts: [post], startOffset: 0, hasMore: false, loading: false };
+        }
+      }
+      if (source.kind !== 'direct') {
+        collection = {
+          source,
+          posts,
+          startOffset,
+          hasMore: rows.length > COLLECTION_PAGE_SIZE,
+          loading: false,
+        };
+      }
     }
-  } else if (state.route.segments[0] === 'models' && state.route.segments[1]) {
-    // Coming from model profile
-    const modelSlug = state.route.segments[1];
-    const model = await getModelDetail(modelSlug);
-    if (!model) throw new Error('This creator could not be found.');
-    posts = publicPosts(await loadPosts({ limit: 1000, offset: 0, modelId: idOf(model) }));
-    idx = posts.findIndex(p => idOf(p) === id);
-    if (idx < 0) throw new Error('This post could not be found.');
-    source = 'model:' + idOf(model);
-    backHref = '/models/' + esc(modelSlug);
-    backLabel = modelName(model) || 'Creator';
+    if (!collection) throw new Error('This post could not be loaded into its source collection.');
+    state.collections.set(sourceKey(source), collection);
+    state.activePost = { key: sourceKey(source), source, index };
   } else {
-    // Default: load from feed
-    posts = publicPosts(await loadPosts({ limit: 1000, offset: 0 }));
-    idx = posts.findIndex(p => idOf(p) === id);
-    if (idx < 0) {
-      const p = await getPost(id);
-      if (!p) throw new Error('This post could not be found.');
-      posts = [p];
-      idx = 0;
-    }
+    state.activePost = { key, source, index };
   }
-
-  const hasPrev = idx > 0;
-  const hasNext = idx < posts.length - 1;
-  const navIcons = `<span class="post-view-nav"><button class="icon-button nav-btn" data-action="post-prev" aria-label="Previous" ${hasPrev ? '' : 'disabled'}>‹</button><button class="icon-button nav-btn" data-action="post-next" aria-label="Next" ${hasNext ? '' : 'disabled'}>›</button></span>`;
-  const title = source.startsWith('model:') ? modelName(posts[idx]?.model ?? posts[idx]?.models ?? {}) || 'Posts' : 'From the feed';
-  return `${heading(backLabel, 'Post', navIcons)}${postCard(posts[idx])}<div class="row-between spacer-top"><button class="btn btn-outline btn-small" data-action="comments" data-id="${esc(idOf(posts[idx]))}">Read and add comments</button><button class="plain-button small" data-go="${esc(backHref)}">Back to ${esc(backLabel)}</button></div>`;
+  return normalPostMarkup();
 }
 async function profilePage(): Promise<string> {
   if (!state.user) return authPage();
@@ -421,9 +673,10 @@ async function profilePage(): Promise<string> {
     listFollowedStyles(),
   ]);
   const followedModels=publicModels(models).filter(m=>state.followed.has(idOf(m)));
-  let savedPosts: AnyRecord[] = [];
-  if (state.user) { try { savedPosts = publicPosts(await listSavedPosts()); } catch (err) { actionError(err); } }
-  return `${heading('Your space','Account',str(p,'display_name','displayName','name') ? `Signed in as ${str(p,'display_name','displayName','name')}` : 'Your account and followed creators.')}${isAdmin() ? `<div class="admin-links"><a class="admin-link" href="/admin" data-go="/admin"><span>Administration</span><small>Manage catalog →</small></a></div>`:''}<div class="section-title"><h2>Following</h2><a href="/models" data-go="/models">Discover</a></div>${followedModels.length?`<div class="model-grid">${followedModels.map(modelCard).join('')}</div>`:stateBlock('empty','Creators you follow will be gathered here.')}<div class="section-title spacer-top"><h2>Saved posts</h2></div>${state.user ? (savedPosts.length ? gridView(savedPosts, 'me:saved', { showModelName: false }) : stateBlock('empty','Posts you save will appear here.')) : ''}<div class="section-title spacer-top"><h2>Followed styles</h2><a href="/styles" data-go="/styles">Browse styles</a></div><div class="chips">${styles.map(s=>`<a class="chip" href="/styles/${esc(str(s,'slug')||idOf(s))}" data-go="/styles/${esc(str(s,'slug')||idOf(s))}">${esc(str(s,'name','title'))}</a>`).join('') || '<span class="muted small">Styles you follow will appear here.</span>'}</div><div class="spacer-top"><button class="btn btn-outline btn-block" data-action="signout">Sign out</button></div>`;
+  let saved: PostCollection | null = null;
+  try { saved = await getCollection(currentBrowseSource('saved')); }
+  catch (err) { actionError(err); }
+  return `${heading('Your space','Account',str(p,'display_name','displayName','name') ? `Signed in as ${str(p,'display_name','displayName','name')}` : 'Your account and followed creators.')}${isAdmin() ? `<div class="admin-links"><a class="admin-link" href="/admin" data-go="/admin"><span>Administration</span><small>Manage catalog →</small></a></div>`:''}<div class="section-title"><h2>Following</h2><a href="/models" data-go="/models">Discover</a></div>${followedModels.length?`<div class="model-grid">${followedModels.map(modelCard).join('')}</div>`:stateBlock('empty','Creators you follow will be gathered here.')}<div class="section-title spacer-top"><h2>Saved posts</h2></div>${saved?.posts.length ? `${gridView(saved)}${loadMoreButton(saved)}` : stateBlock('empty','Posts you save will be gathered here.')}<div class="section-title spacer-top"><h2>Followed styles</h2><a href="/styles" data-go="/styles">Browse styles</a></div><div class="chips">${styles.map(s=>`<a class="chip" href="/styles/${esc(str(s,'slug')||idOf(s))}" data-go="/styles/${esc(str(s,'slug')||idOf(s))}">${esc(str(s,'name','title'))}</a>`).join('') || '<span class="muted small">Styles you follow will be here.</span>'}</div><div class="spacer-top"><button class="btn btn-outline btn-block" data-action="signout">Sign out</button></div>`;
 }
 function authPage(): string {
   const tab = state.modalData.authMode || 'signin';
@@ -592,24 +845,23 @@ async function refreshSession(): Promise<void> {
     state.error = userError(err);
   }
 }
-async function render(): Promise<void> {
+async function render(restoreScrollY = window.scrollY): Promise<void> {
   const generation = ++state.generation;
   const current = state.route;
   videoObserver?.disconnect();
   root!.innerHTML = shell(stateBlock('loading'));
   try {
+    if (current.query.has('search')) state.search = current.query.get('search') || '';
     if ((current.path.startsWith('/admin')) && state.user) {
       try { state.profile = await getMyProfile(); }
       catch (err) { throw err; }
     }
     if ((current.path === '/admin/models') && isAdmin()) state.styles = list(await listStyles({limit:100,offset:0}));
-    state.posts = publicPosts(await loadPosts({ limit: 1000, offset: 0, search: state.search || undefined }));
     const content = await page(current);
     if (generation !== state.generation) return;
     root!.innerHTML = shell(content);
     observeMedia();
-    if (state.viewer) setupViewerInteractions();
-    if (state.route.path === '/post' || state.route.segments[0] === 'post') setupPostNav();
+    if (state.route.segments[0] === 'post') setupNormalInteractions();
     if (state.importReview || state.storageBrowser || state.modal) {
       const focusTarget = state.importReview
         ? root!.querySelector<HTMLElement>('.import-review-overlay button:not([disabled])')
@@ -618,31 +870,109 @@ async function render(): Promise<void> {
           : root!.querySelector<HTMLElement>('.modal input, .modal textarea, .modal select, .modal button');
       focusTarget?.focus();
     }
+    requestAnimationFrame(() => window.scrollTo(0, Math.max(0, restoreScrollY)));
   } catch (err) {
     if (generation !== state.generation) return;
     root!.innerHTML = shell(`<section class="page-head">${stateBlock('error', userError(err))}</section>`);
+    requestAnimationFrame(() => window.scrollTo(0, Math.max(0, restoreScrollY)));
   }
 }
 let videoObserver: IntersectionObserver | null = null;
+function prepareVideoPreview(video: HTMLVideoElement): void {
+  if (video.dataset.loaded === 'true') return;
+  const src = video.dataset.src;
+  if (!src) return;
+  video.dataset.loaded = 'true';
+  video.addEventListener('loadedmetadata', () => {
+    if (video.duration > 0 && Number.isFinite(video.duration)) {
+      try { video.currentTime = Math.min(0.08, video.duration / 2); } catch { /* Keep the browser poster if seeking is unavailable. */ }
+    }
+  }, { once: true });
+  video.addEventListener('loadeddata', () => {
+    video.classList.add('has-preview-frame');
+    video.pause();
+  }, { once: true });
+  video.src = src;
+  video.load();
+}
 function observeMedia(): void {
   videoObserver?.disconnect();
   videoObserver = null;
-  const videos = root!.querySelectorAll<HTMLVideoElement>('video[data-feed-video]');
+  const videos = root!.querySelectorAll<HTMLVideoElement>('video[data-preview-video]');
   if (!videos.length) return;
   if (!('IntersectionObserver' in window)) {
-    videos.forEach(v => { v.src = v.dataset.src || ''; });
+    const first = videos[0];
+    if (first) prepareVideoPreview(first);
     return;
   }
   videoObserver = new IntersectionObserver(entries => {
     for (const entry of entries) {
       const video = entry.target as HTMLVideoElement;
       if (entry.isIntersecting) {
-        if (!video.src) video.src = video.dataset.src || '';
-        void video.play().catch(() => {});
-      } else video.pause();
+        prepareVideoPreview(video);
+        videoObserver?.unobserve(video);
+      }
     }
-  }, { threshold: 0.55 });
+  }, { threshold: 0.01, rootMargin: '240px 0px' });
   videos.forEach(v => videoObserver!.observe(v));
+}
+function setupNormalInteractions(): void {
+  const post = root!.querySelector<HTMLElement>('.normal-post');
+  if (!post) return;
+  const mediaLoading = post.querySelector<HTMLElement>('[data-media-loading]');
+  const mediaError = post.querySelector<HTMLElement>('[data-media-error]');
+  const image = post.querySelector<HTMLImageElement>('[data-normal-image]');
+  const video = post.querySelector<HTMLVideoElement>('[data-normal-video]');
+  const showLoaded = () => { if (mediaLoading) mediaLoading.hidden = true; };
+  const showError = () => {
+    if (mediaLoading) mediaLoading.hidden = true;
+    if (mediaError) mediaError.hidden = false;
+  };
+  if (image) {
+    image.addEventListener('load', showLoaded, { once: true });
+    image.addEventListener('error', showError, { once: true });
+    if (image.complete) image.naturalWidth > 0 ? showLoaded() : showError();
+  }
+  if (video) {
+    video.muted = state.videoMuted;
+    video.addEventListener('loadeddata', showLoaded, { once: true });
+    video.addEventListener('error', showError, { once: true });
+    video.addEventListener('volumechange', () => {
+      state.videoMuted = video.muted;
+      refreshMuteButton(idOf(activeCollection()?.posts[state.activePost?.index ?? -1]));
+    });
+    void video.play().catch(() => { /* Native controls remain available when autoplay is blocked. */ });
+  }
+
+  let startX = 0;
+  let startY = 0;
+  let tracking = false;
+  post.addEventListener('touchstart', event => {
+    const target = event.target as HTMLElement;
+    const point = event.touches[0];
+    const videoTarget = target.closest<HTMLVideoElement>('video[data-normal-video]');
+    const videoControls = videoTarget
+      ? point.clientY >= videoTarget.getBoundingClientRect().bottom - 76
+      : false;
+    if (event.touches.length !== 1
+      || target.closest('button,a,input,textarea,select,[data-interactive]')
+      || videoControls) {
+      tracking = false;
+      return;
+    }
+    startX = point.clientX;
+    startY = point.clientY;
+    tracking = true;
+  }, { passive: true });
+  post.addEventListener('touchend', event => {
+    if (!tracking || event.changedTouches.length !== 1) return;
+    const dx = event.changedTouches[0].clientX - startX;
+    const dy = event.changedTouches[0].clientY - startY;
+    tracking = false;
+    if (Math.abs(dy) < 54 || Math.abs(dy) < Math.abs(dx) * 1.2) return;
+    void movePost(dy < 0 ? 1 : -1);
+  }, { passive: true });
+  post.addEventListener('touchcancel', () => { tracking = false; }, { passive: true });
 }
 function formValues(form: HTMLFormElement): FormData { return new FormData(form); }
 async function openComments(postId: string): Promise<void> {
@@ -658,6 +988,109 @@ async function openComments(postId: string): Promise<void> {
     await render();
     toast(userError(err));
   }
+}
+function safeInternalPath(path: string): string {
+  try {
+    const url = new URL(path, location.origin);
+    if (url.origin !== location.origin) return '/';
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return '/';
+  }
+}
+function refreshMuteButton(postId: string): void {
+  if (!postId) return;
+  for (const button of document.querySelectorAll<HTMLButtonElement>(
+    `[data-action="mute"][data-id="${CSS.escape(postId)}"]`,
+  )) {
+    button.classList.toggle('active-mute', state.videoMuted);
+    button.setAttribute('aria-pressed', String(state.videoMuted));
+    button.setAttribute('aria-label', state.videoMuted ? 'Unmute video' : 'Mute video');
+    button.innerHTML = state.videoMuted ? icon('volumeOff') : icon('volume');
+  }
+}
+function disposeNormalVideo(): void {
+  const video = root!.querySelector<HTMLVideoElement>('video[data-normal-video]');
+  if (!video) return;
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+}
+function updateNormalUrl(): void {
+  const collection = activeCollection();
+  const active = state.activePost;
+  const post = collection && active ? collection.posts[active.index] : null;
+  if (!collection || !active || !post) return;
+  const absoluteIndex = collection.startOffset + active.index;
+  history.replaceState(
+    { ...history.state, mmcNormal: true, returnTo: collection.source.returnTo, index: absoluteIndex },
+    '',
+    postUrl(idOf(post), collection.source, absoluteIndex),
+  );
+  state.route = parseRoute();
+}
+async function movePost(direction: -1 | 1): Promise<void> {
+  const active = state.activePost;
+  const collection = activeCollection();
+  if (!active || !collection || collection.loading) return;
+  let nextIndex = active.index + direction;
+
+  if (nextIndex < 0 && collection.startOffset > 0) {
+    collection.loading = true;
+    try {
+      const previousStart = Math.max(0, collection.startOffset - COLLECTION_PAGE_SIZE);
+      const rows = await fetchCollectionPage(collection.source, previousStart);
+      const previousLength = Math.min(COLLECTION_PAGE_SIZE, collection.startOffset - previousStart);
+      const previousPosts = rows.slice(0, previousLength);
+      if (previousPosts.length) {
+        collection.posts = [...previousPosts, ...collection.posts];
+        collection.startOffset = previousStart;
+        active.index += previousPosts.length;
+        nextIndex = active.index - 1;
+      }
+    } catch (err) {
+      toast(userError(err));
+      return;
+    } finally {
+      collection.loading = false;
+    }
+  } else if (nextIndex >= collection.posts.length && collection.hasMore) {
+    collection.loading = true;
+    const indicator = root!.querySelector<HTMLElement>('.normal-nav-loading');
+    if (indicator) indicator.textContent = 'Loading next post…';
+    try {
+      const rows = await fetchCollectionPage(
+        collection.source,
+        collection.startOffset + collection.posts.length,
+      );
+      const seen = new Set(collection.posts.map(idOf));
+      collection.posts.push(...rows.slice(0, COLLECTION_PAGE_SIZE).filter(post => !seen.has(idOf(post))));
+      collection.hasMore = rows.length > COLLECTION_PAGE_SIZE;
+    } catch (err) {
+      toast(userError(err));
+      return;
+    } finally {
+      collection.loading = false;
+    }
+  }
+
+  if (nextIndex < 0 || nextIndex >= collection.posts.length) return;
+  disposeNormalVideo();
+  active.index = nextIndex;
+  state.activePost = active;
+  updateNormalUrl();
+  await render(0);
+}
+function closeNormalView(): void {
+  const source = activeCollection()?.source ?? sourceFromPostRoute();
+  const returnTo = safeInternalPath(source?.returnTo || '/');
+  disposeNormalVideo();
+  state.activePost = null;
+  if (history.state?.mmcNormal) {
+    history.back();
+    return;
+  }
+  go(returnTo);
 }
 function currentStorageFolder(browser: StorageBrowserSession): ZeroFolder {
   return browser.stack.at(-1) ?? browser.rootFolder;
@@ -1131,39 +1564,25 @@ async function handleAction(button: HTMLElement): Promise<void> {
       case 'modal-outside': break;
       case 'auth-mode': state.modalData.authMode=button.dataset.mode; await render(); break;
       case 'like': {
-        await toggleLike(id);
-        // Update viewer in-place if open
-        const vEl = root!.querySelector('.viewer-overlay');
-        if (vEl) {
-          const newHtml = renderViewer();
-          vEl.outerHTML = newHtml;
-          observeMedia();
-          setupViewerInteractions();
-        } else {
-          await render();
-        }
+        const result = await toggleLike(id);
+        updateCollectionPost(id, { liked_by_me: result.active, like_count: result.count });
+        refreshPostAction(id, 'like');
         break;
       }
       case 'mmc': {
-        await toggleMMC(id);
-        const vEl = root!.querySelector('.viewer-overlay');
-        if (vEl) {
-          const newHtml = renderViewer();
-          vEl.outerHTML = newHtml;
-          observeMedia();
-          setupViewerInteractions();
-        } else {
-          await render();
-        }
+        const result = await toggleMMC(id);
+        updateCollectionPost(id, { mmc_by_me: result.active, mmc_count: result.count });
+        refreshPostAction(id, 'mmc');
         break;
       }
       case 'follow': {
         if (!state.user) { go('/me'); toast('Sign in to follow a creator.'); break; }
-        await toggleFollow(id);
-        const ids = await getFollowedModelIds();
-        state.followed = new Set(ids);
+        const following = await toggleFollow(id);
+        if (following) state.followed.add(id);
+        else state.followed.delete(id);
+        refreshFollowButtons(id);
         toast(state.followed.has(id) ? 'Added to your follows.' : 'Removed from your follows.');
-        await render(); break;
+        break;
       }
       case 'style-follow': {
         if (!state.user) { go('/me'); toast('Sign in to follow a style.'); break; }
@@ -1175,30 +1594,18 @@ async function handleAction(button: HTMLElement): Promise<void> {
       case 'comments': await openComments(id); break;
       case 'mute': {
         if (!id) break;
-        const p = state.posts.find(function(x) { return idOf(x) === id; });
-        if (!p) break;
-        const isMuted = bool(p, 'is_muted', 'isMuted', 'muted');
-        const next = !isMuted;
-        const { error } = await getSupabase()
-          .from('posts')
-          .update({ is_muted: next, muted: next })
-          .eq('id', id);
-        if (error) { actionError(error); break; }
-        toast('Muted ' + (next ? 'on' : 'off'));
-        await render(); break;
+        const video = root!.querySelector<HTMLVideoElement>(`[data-normal-post="${CSS.escape(id)}"] video[data-normal-video]`);
+        if (!video) break;
+        video.muted = !video.muted;
+        state.videoMuted = video.muted;
+        refreshMuteButton(id);
+        break;
       }
       case 'save': {
         if (!id) break;
-        await toggleSave(id);
-        const vEl = root!.querySelector('.viewer-overlay');
-        if (vEl) {
-          const newHtml = renderViewer();
-          vEl.outerHTML = newHtml;
-          observeMedia();
-          setupViewerInteractions();
-        } else {
-          await render();
-        }
+        const result = await toggleSave(id);
+        updateCollectionPost(id, { saved_by_me: result.active });
+        refreshPostAction(id, 'save');
         break;
       }
       case 'toggle-caption': {
@@ -1214,39 +1621,32 @@ async function handleAction(button: HTMLElement): Promise<void> {
         }
         return;
       }
-      case 'close-viewer': closeViewer(); return;
-      case 'post-prev': {
-        if (state.postNav && state.postNav.index > 0) {
-          state.postNav.index--;
-          go('/post/' + idOf(state.postNav.posts[state.postNav.index]));
-        }
+      case 'toggle-normal-caption': {
+        const text = button.closest('.normal-caption')?.querySelector<HTMLElement>('[data-caption-text]');
+        if (!text) break;
+        const expanded = text.classList.toggle('is-expanded');
+        text.classList.toggle('is-collapsed', !expanded);
+        button.textContent = expanded ? 'Less' : 'More';
+        button.setAttribute('aria-expanded', String(expanded));
         break;
       }
-      case 'post-next': {
-        if (state.postNav && state.postNav.index < state.postNav.posts.length - 1) {
-          state.postNav.index++;
-          go('/post/' + idOf(state.postNav.posts[state.postNav.index]));
-        }
+      case 'browse-filter': {
+        const value = button.dataset.value || '';
+        const next = new URL(location.href);
+        if (value === 'image' || value === 'video') next.searchParams.set('type', value);
+        else next.searchParams.delete('type');
+        go(`${next.pathname}${next.search}`);
         break;
       }
-      case 'viewer-prev': {
-        if (state.viewer && state.viewer.index > 0) {
-          state.viewer.index--;
-          const el = root!.querySelector('.viewer-overlay');
-          if (el) el.outerHTML = renderViewer();
-          observeMedia();
-        }
-        return;
+      case 'load-more': {
+        const source = JSON.parse(button.dataset.source || '{}') as BrowseSource;
+        await loadMoreCollection(source);
+        await render(window.scrollY);
+        break;
       }
-      case 'viewer-next': {
-        if (state.viewer && state.viewer.index < state.viewer.posts.length - 1) {
-          state.viewer.index++;
-          const el = root!.querySelector('.viewer-overlay');
-          if (el) el.outerHTML = renderViewer();
-          observeMedia();
-        }
-        return;
-      }
+      case 'close-normal': closeNormalView(); return;
+      case 'post-prev': await movePost(-1); return;
+      case 'post-next': await movePost(1); return;
       case 'signout': await signOut(); state.user=null; state.profile=null; state.followed.clear(); state.followedStyles.clear(); go('/'); toast('You have signed out.'); break;
       case 'profile-image-select':
         if (!isAdmin()) throw new Error('Administrator access is required.');
@@ -1504,188 +1904,25 @@ async function handleSubmit(form: HTMLFormElement): Promise<void> {
 }
 
 let searchTimer = 0;
-let currentViewerPosts: AnyRecord[] | null = null;
-let currentViewerIndex = 0;
-let lastScrollY = 0;
-
-function openViewer(posts: AnyRecord[], startIndex: number, source = 'feed'): void {
-  currentViewerPosts = posts;
-  currentViewerIndex = startIndex;
-  state.viewer = { posts, index: startIndex };
-  state.viewerSource = source;
-  lastScrollY = window.scrollY;
-  document.body.classList.add('body-locked');
-  void render();
-}
-
-function closeViewer(): void {
-  state.viewer = null;
-  currentViewerPosts = null;
-  currentViewerIndex = -1;
-  document.body.classList.remove('body-locked');
-  window.scrollTo(0, lastScrollY);
-  const existing = root!.querySelector('.viewer-overlay');
-  if (existing) existing.remove();
-}
-
-function setupViewerInteractions(): void {
-  const overlay = root!.querySelector('.viewer-overlay') as HTMLElement;
-  if (!overlay) return;
-
-  // Drag-scroll: navigate to next/prev on horizontal drag
-  let startX = 0;
-  let startY = 0;
-  let isDragging = false;
-  let dragThreshold = 40;
-
-  overlay.addEventListener('touchstart', (e: TouchEvent) => {
-    if (e.touches.length === 1) {
-      startX = e.touches[0].clientX;
-      startY = e.touches[0].clientY;
-      isDragging = true;
-    }
-  }, { passive: true });
-
-  overlay.addEventListener('touchmove', (e: TouchEvent) => {
-    if (!isDragging || e.touches.length !== 1) return;
-    const dx = e.touches[0].clientX - startX;
-    const dy = e.touches[0].clientY - startY;
-    // Vertical drag for navigation (Instagram-like: swipe up = next, swipe down = prev)
-    if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > dragThreshold) {
-      const vid = overlay.querySelector('.viewer-video') as HTMLVideoElement;
-      if (vid && !vid.paused) { vid.pause(); } // pause before navigating
-      isDragging = false;
-      if (dy < 0 && state.viewer && state.viewer.index < (state.viewer.posts.length - 1)) {
-        // swipe up = next
-        const btn = overlay.querySelector('[data-action="viewer-next"]') as HTMLButtonElement;
-        if (btn && !btn.disabled) { btn.click(); }
-      } else if (dy > 0 && state.viewer && state.viewer.index > 0) {
-        // swipe down = prev
-        const btn = overlay.querySelector('[data-action="viewer-prev"]') as HTMLButtonElement;
-        if (btn && !btn.disabled) { btn.click(); }
-      }
-    }
-  }, { passive: true });
-
-  overlay.addEventListener('touchend', () => {
-    isDragging = false;
-  }, { passive: true });
-
-  // Auto-play and center tap-to-play/pause for videos in viewer
-  const video = overlay.querySelector('.viewer-video') as HTMLVideoElement | null;
-  if (video) {
-    void video.play().catch(() => {});
-    video.addEventListener('click', () => {
-      if (video.paused) {
-        void video.play().catch(() => {});
-        // Remove pause indicator if visible
-        const ind = overlay.querySelector('.viewer-play-indicator') as HTMLElement | null;
-        if (ind) ind.style.opacity = '0';
-      } else {
-        video.pause();
-        showViewerPlayIndicator(overlay, 'paused');
-      }
-    });
-  }
-}
-
-function setupPostNav(): void {
-  const nav = root!.querySelector('.post-view-nav');
-  if (!nav) return;
-  // Only attach if we have prev/next buttons
-  const prevBtn = nav.querySelector('[data-action="post-prev"]') as HTMLButtonElement | null;
-  const nextBtn = nav.querySelector('[data-action="post-next"]') as HTMLButtonElement | null;
-  if (!prevBtn && !nextBtn) return;
-
-  let startY = 0;
-  let isDragging = false;
-  const dragThreshold = 50;
-  const pageEl = root!;
-
-  pageEl.addEventListener('touchstart', (e: TouchEvent) => {
-    if (e.touches.length === 1) {
-      // Only start drag if touching the post-media area (not action buttons)
-      const target = e.target as HTMLElement;
-      if (target.closest('[data-action]') || target.closest('.post-actions') || target.closest('.post-caption')) return;
-      startY = e.touches[0].clientY;
-      isDragging = true;
-    }
-  }, { passive: true });
-
-  pageEl.addEventListener('touchmove', (e: TouchEvent) => {
-    if (!isDragging || e.touches.length !== 1) return;
-    const dy = e.touches[0].clientY - startY;
-    if (Math.abs(dy) > dragThreshold) {
-      // Pause any video before navigating
-      const vid = pageEl.querySelector('video[data-feed-video]') as HTMLVideoElement | null;
-      if (vid && !vid.paused) { vid.pause(); }
-      isDragging = false;
-      if (dy < 0 && nextBtn && !nextBtn.disabled) {
-        nextBtn.click();
-      } else if (dy > 0 && prevBtn && !prevBtn.disabled) {
-        prevBtn.click();
-      }
-    }
-  }, { passive: true });
-
-  pageEl.addEventListener('touchend', () => {
-    isDragging = false;
-  }, { passive: true });
-}
-
-function showViewerPlayIndicator(overlay: HTMLElement, state: string): void {
-  let ind = overlay.querySelector('.viewer-play-indicator') as HTMLElement | null;
-  if (!ind) {
-    ind = document.createElement('div');
-    ind.className = 'viewer-play-indicator';
-    ind.setAttribute('aria-hidden', 'true');
-    overlay.appendChild(ind);
-  }
-  ind.textContent = state === 'paused' ? 'II' : '';
-  ind.style.opacity = '1';
-  setTimeout(() => { ind.style.opacity = '0'; }, 800);
-}
-
-function openViewerForMedia(src: string, kind: string, origin: HTMLElement): void {
-  const post = origin.closest('[data-post-card]');
-  const card = post as any;
-  if (card) {
-    const pid = card.dataset.postCard || idOf(card);
-    const idx = state.posts.findIndex(function(p) { return idOf(p) === pid; });
-    if (idx >= 0) openViewer(state.posts, idx, 'feed');
-  }
-}
-
-function openViewerFromGrid(postId: string, source: string, collection: string): void {
-  try {
-    const arr = collection ? JSON.parse(collection) : [];
-    const ids = arr.map(function(p: any) { return idOf(p); });
-    const idx = ids.indexOf(postId);
-    if (idx >= 0) openViewer(arr, idx, source);
-    else openViewer([state.posts.find(function(p: any) { return idOf(p) === postId; }) as AnyRecord].filter(Boolean), 0);
-  } catch {
-    openViewer(state.posts.filter(function(p) { return idOf(p) === postId; }), 0);
-  }
-}
 
 document.addEventListener('click', e => {
   const target=e.target as HTMLElement;
-  const video=target.closest<HTMLVideoElement>('video[data-feed-video]');
-  if (video) {
-    const wrap = video.closest('.post-media');
-    const ind = wrap?.querySelector('.post-video-play-indicator') as HTMLElement | null;
-    if (video.paused) {
-      void video.play().catch(()=>{});
-      if (ind) ind.classList.remove('visible');
-    } else {
-      video.pause();
-      if (ind) { ind.classList.add('visible'); setTimeout(() => ind.classList.remove('visible'), 800); }
-    }
-    return;
-  }
   if (target.classList.contains('modal-backdrop')) {
     state.modal=''; state.modalData={}; void render(); return;
   }
+  const openPost=target.closest<HTMLElement>('[data-open-post]');
+  if (openPost) {
+    e.preventDefault();
+    try {
+      const source=JSON.parse(openPost.dataset.source || '{}') as BrowseSource;
+      const index=Number(openPost.dataset.index || 0);
+      const postId=openPost.dataset.openPost || '';
+      if (postId && source.kind) openNormalPost(postId, source, Number.isFinite(index) ? index : 0);
+    } catch (err) { actionError(err); }
+    return;
+  }
+  const button=target.closest<HTMLElement>('[data-action]');
+  if (button) { e.preventDefault(); e.stopPropagation(); void handleAction(button); return; }
   const link=target.closest<HTMLElement>('[data-go]');
   if (link) {
     e.preventDefault();
@@ -1693,33 +1930,6 @@ document.addEventListener('click', e => {
     if (dest) go(dest);
     return;
   }
-  const full=target.closest<HTMLElement>('[data-fullscreen]');
-  if (full) {
-    const src=full.dataset.fullscreen||'', kind=full.dataset.kind||'image';
-    openViewerForMedia(src, kind, full);
-    e.preventDefault();
-    return;
-  }
-  const gridTile = target.closest<HTMLElement>('[data-grid-tile]');
-  if (gridTile) {
-    e.preventDefault();
-    const postId = gridTile.dataset.gridTile || '';
-    if (postId) {
-      // Store the collection for post navigation
-      const source = gridTile.dataset.gridSource || 'feed';
-      try {
-        const arr = JSON.parse(gridTile.dataset.gridPosts || '[]');
-        const idx = arr.findIndex((p: any) => idOf(p) === postId);
-        state.postNav = arr.length > 0 ? { posts: arr, index: idx >= 0 ? idx : 0, source } : null;
-      } catch {
-        state.postNav = null;
-      }
-      go('/post/' + postId);
-    }
-    return;
-  }
-  const button=target.closest<HTMLElement>('[data-action]');
-  if (button) { e.stopPropagation(); void handleAction(button); return; }
 });
 document.addEventListener('submit', e => {
   const form=e.target;
@@ -1744,6 +1954,11 @@ document.addEventListener('input', e => {
   }
   if (!target.matches('[data-search]')) return;
   state.search=target.value;
+  const next = new URL(location.href);
+  if (state.search.trim()) next.searchParams.set('search', state.search.trim());
+  else next.searchParams.delete('search');
+  history.replaceState({ ...history.state }, '', `${next.pathname}${next.search}`);
+  state.route = parseRoute();
   window.clearTimeout(searchTimer);
   searchTimer=window.setTimeout(()=>void render(),250);
 });
@@ -1761,23 +1976,22 @@ document.addEventListener('change', e => {
   if (select.dataset.filter) void render();
 });
 document.addEventListener('keydown', e => {
-  if (e.key==='Escape') {
-    if (state.viewer) { closeViewer(); }
-    else document.querySelector('.fullscreen')?.remove();
-  }
   const target=e.target;
-  if ((e.key===' ' || e.key==='Enter') && target instanceof HTMLImageElement && target.hasAttribute('data-fullscreen')) {
-    e.preventDefault();
-    target.click();
-  }
-  if ((e.key===' ' || e.key==='Enter') && target instanceof HTMLVideoElement && target.matches('video[data-feed-video]')) {
-    e.preventDefault();
-    if (target.paused) void target.play().catch(()=>{}); else target.pause();
-  }
   if (e.key==='Escape') {
     if (state.importReview) { state.importReview=null; void render(); }
     else if (state.storageBrowser) { state.storageBrowser=null; void render(); }
     else if (state.modal) { state.modal=''; state.modalData={}; void render(); }
+    else if (state.route.segments[0] === 'post') closeNormalView();
+    return;
+  }
+  const nativeControl = target instanceof HTMLInputElement
+    || target instanceof HTMLTextAreaElement
+    || target instanceof HTMLSelectElement
+    || target instanceof HTMLVideoElement
+    || (target instanceof HTMLElement && target.isContentEditable);
+  if (!nativeControl && state.route.segments[0] === 'post') {
+    if (e.key === 'ArrowDown') { e.preventDefault(); void movePost(1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); void movePost(-1); }
   }
 });
 document.addEventListener('error', e => {
@@ -1791,7 +2005,15 @@ document.addEventListener('error', e => {
     image.replaceWith(fallback);
   }
 }, true);
-window.addEventListener('popstate',()=>{state.route=parseRoute();void render();});
+window.addEventListener('popstate',()=>{
+  state.route=parseRoute();
+  state.search=state.route.query.get('search') || '';
+  if (state.route.segments[0] !== 'post') {
+    disposeNormalVideo();
+    state.activePost=null;
+  }
+  void render(Number(history.state?.scrollY) || 0);
+});
 try { onAuthChange(async user=>{
   state.user=user;
   try {
