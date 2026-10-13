@@ -50,7 +50,10 @@ export async function listFollowedModels(): Promise<Model[]> {
   return (data ?? []) as Model[];
 }
 
-export async function getModelDetail(slug: string): Promise<ModelDetail | null> {
+export async function getModelDetail(
+  slug: string,
+  { includePosts = true }: { includePosts?: boolean } = {},
+): Promise<ModelDetail | null> {
   let query = getSupabase()
     .from("models")
     .select("id,name,username,slug,description,profile_image_url,profile_image_zerostorage_file_id,published,created_at,updated_at")
@@ -62,17 +65,23 @@ export async function getModelDetail(slug: string): Promise<ModelDetail | null> 
   if (!data) return null;
 
   const model = data as Model;
-  const [stylesResult, posts, followedIds] = await Promise.all([
+  const [stylesResult, posts, followedIds, imageCountResult, videoCountResult] = await Promise.all([
     getSupabase()
       .from("model_styles")
       .select("style_id,styles(id,name,slug,created_at)")
       .eq("model_id", model.id),
-    listPosts({ modelId: model.id, limit: 24, offset: 0 }),
+    includePosts ? listPosts({ modelId: model.id, limit: 24, offset: 0 }) : Promise.resolve([] as Post[]),
     getFollowedModelIds(),
+    getSupabase().from("posts").select("id", { count: "exact", head: true })
+      .eq("model_id", model.id).eq("type", "image"),
+    getSupabase().from("posts").select("id", { count: "exact", head: true })
+      .eq("model_id", model.id).eq("type", "video"),
   ]);
   if (stylesResult.error) {
     throw new Error(`Could not load this model's styles: ${stylesResult.error.message}`);
   }
+  if (imageCountResult.error) throw new Error(`Could not count this model's images: ${imageCountResult.error.message}`);
+  if (videoCountResult.error) throw new Error(`Could not count this model's videos: ${videoCountResult.error.message}`);
   const styles = (stylesResult.data ?? []).flatMap((row) => {
     const related = row.styles as unknown as Style | Style[] | null;
     return Array.isArray(related) ? related : related ? [related] : [];
@@ -82,8 +91,8 @@ export async function getModelDetail(slug: string): Promise<ModelDetail | null> 
     ...model,
     styles,
     posts,
-    image_count: posts.filter((post) => post.type === "image").length,
-    video_count: posts.filter((post) => post.type === "video").length,
+    image_count: imageCountResult.count ?? 0,
+    video_count: videoCountResult.count ?? 0,
     followed: followedIds.includes(model.id),
   };
 }
